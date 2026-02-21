@@ -37,7 +37,7 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(ConflictError)
     def _conflict(request: Request, exc: ConflictError) -> JSONResponse:
-        return JSONResponse(status_code=400, content={"detail": exc.message})
+        return JSONResponse(status_code=409, content={"detail": exc.message})
 
     @app.get("/health", tags=["ops"])
     def health() -> dict:

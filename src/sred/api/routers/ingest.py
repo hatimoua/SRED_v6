@@ -18,7 +18,7 @@ def process_file(run_id: int, file_id: int) -> IngestResponse:
     # Phase 1: validate; UoW auto-closes on exit
     with UnitOfWork() as uow:
         svc = IngestService(uow)
-        _file_id_validated, already_processed = svc.validate(run_id, file_id)
+        _, already_processed = svc.validate(run_id, file_id)
 
     if already_processed:
         return IngestResponse(

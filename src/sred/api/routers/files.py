@@ -15,7 +15,7 @@ async def upload_file(
     uow: UnitOfWork = Depends(get_uow),
 ) -> FileRead:
     content = await file.read()
-    return await FilesService(uow).upload_file(
+    return FilesService(uow).upload_file(
         run_id=run_id,
         content=content,
         original_filename=file.filename or "upload",

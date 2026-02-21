@@ -6,15 +6,14 @@ from sred.infra.db.repositories.run_repository import RunRepository
 from sred.infra.db.repositories.file_repository import FileRepository
 from sred.api.schemas.files import FileRead, FileList
 from sred.storage.files import compute_sha256, sanitize_filename
-from sred.db import DATA_DIR
-from pathlib import Path
+from sred.config import settings
 
 
 class FilesService:
     def __init__(self, uow: UnitOfWork) -> None:
         self._uow = uow
 
-    async def upload_file(
+    def upload_file(
         self,
         run_id: int,
         content: bytes,
@@ -37,13 +36,14 @@ class FilesService:
             return FileRead.model_validate(existing)
 
         # Write bytes to disk (same convention as save_upload)
-        run_dir = DATA_DIR / "runs" / str(run_id) / "uploads"
+        data_dir = settings.data_dir
+        run_dir = data_dir / "runs" / str(run_id) / "uploads"
         run_dir.mkdir(parents=True, exist_ok=True)
         safe_name = sanitize_filename(original_filename)
         stored_filename = f"{sha256}_{safe_name}"
         stored_path_abs = run_dir / stored_filename
         stored_path_abs.write_bytes(content)
-        stored_path_rel = str(stored_path_abs.relative_to(DATA_DIR))
+        stored_path_rel = str(stored_path_abs.relative_to(data_dir))
 
         # Persist DB record
         file = file_repo.create(

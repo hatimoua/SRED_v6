@@ -18,6 +18,7 @@ When a page is migrated to use the API client instead of ORM imports:
 
 import ast
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -75,26 +76,29 @@ def _is_banned_import(module_name: str) -> bool:
     return any(module_name.startswith(prefix) for prefix in BANNED_PREFIXES)
 
 
-def _file_has_banned_imports(path: Path) -> bool:
-    """Parse *path* with AST and return True if any import is banned."""
+def _file_imports_any(path: Path, is_banned: Callable[[str], bool]) -> bool:
+    """Parse *path* with AST and return True if any import matches *is_banned*."""
     source = path.read_text(encoding="utf-8")
     try:
         tree = ast.parse(source, filename=str(path))
     except SyntaxError:
-        # If the file can't be parsed, treat it as a violation so it's noticed.
         return True
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if _is_banned_import(alias.name):
+                if is_banned(alias.name):
                     return True
         elif isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            if _is_banned_import(module):
+            if is_banned(node.module or ""):
                 return True
 
     return False
+
+
+def _file_has_banned_imports(path: Path) -> bool:
+    """Return True if *path* contains any import banned for UI files."""
+    return _file_imports_any(path, _is_banned_import)
 
 
 def _collect_ui_python_files() -> list[Path]:
@@ -150,19 +154,12 @@ def test_ui_import_boundaries() -> None:
 def test_service_import_boundaries() -> None:
     """Service files must not import from fastapi."""
     services_root = REPO_ROOT / "src" / "sred" / "services"
-    violations = []
-    for py_file in sorted(services_root.rglob("*.py")):
-        source = py_file.read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("fastapi"):
-                violations.append(_repo_relative(py_file))
-                break
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name.startswith("fastapi"):
-                        violations.append(_repo_relative(py_file))
-                        break
+    _is_fastapi = lambda m: m.startswith("fastapi")  # noqa: E731
+    violations = [
+        _repo_relative(py_file)
+        for py_file in sorted(services_root.rglob("*.py"))
+        if _file_imports_any(py_file, _is_fastapi)
+    ]
     assert not violations, (
         "Service files must not import fastapi:\n"
         + "\n".join(f"  {v}" for v in violations)

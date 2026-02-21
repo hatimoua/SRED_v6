@@ -1,6 +1,7 @@
 """Repository for Run records. No business logic; caller owns the transaction."""
 from __future__ import annotations
-from sqlmodel import Session, select
+from sqlalchemy import func
+from sqlmodel import Session, select, col
 from sred.models.core import Run
 
 
@@ -15,8 +16,6 @@ class RunRepository:
         return list(self._s.exec(select(Run).offset(offset).limit(limit)).all())
 
     def count(self) -> int:
-        from sqlalchemy import func
-        from sqlmodel import col
         result = self._s.exec(select(func.count()).select_from(Run)).one()
         return result
 

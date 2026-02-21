@@ -1,3 +1,4 @@
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, SecretStr
 
@@ -24,9 +25,10 @@ class Settings(BaseSettings):
         description="Model for embeddings"
     )
     PAYROLL_MISMATCH_THRESHOLD: float = Field(
-        0.05, 
+        0.05,
         description="Threshold for payroll mismatch warnings"
     )
+    data_dir: Path = Field(Path("data"), description="Root directory for data files")
 
 # Singleton instance
 settings = Settings()
