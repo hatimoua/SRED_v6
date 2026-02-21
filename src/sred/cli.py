@@ -1,3 +1,4 @@
+import os
 import sys
 import typer
 from pathlib import Path
@@ -19,33 +20,90 @@ def doctor():
     Check system configuration and environment health.
     """
     logger.info("Running doctor check...")
-    
-    print("\n🩺 SRED Automation Doctor\n")
-    
-    # Check 1: Environment / Interpreter
-    print(f"Python: {sys.version.split()[0]}")
-    print(f"Prefix: {sys.prefix}")
-    print(f"Run ID: {get_run_id()}")
-    
-    # Check 2: Configuration
-    print("\n[Configuration]")
-    print(f"OPENAI_MODEL_AGENT:       {settings.OPENAI_MODEL_AGENT}")
-    print(f"OPENAI_MODEL_VISION:      {settings.OPENAI_MODEL_VISION}")
-    print(f"OPENAI_MODEL_STRUCTURED:  {settings.OPENAI_MODEL_STRUCTURED}")
-    print(f"PAYROLL_MISMATCH_THRESHOLD: {settings.PAYROLL_MISMATCH_THRESHOLD}")
-    
-    # Mask API Key
-    api_key_status = "✅ Set" if settings.OPENAI_API_KEY and settings.OPENAI_API_KEY.get_secret_value() else "❌ Missing"
-    print(f"OPENAI_API_KEY:           {api_key_status}")
 
-    # Check 3: Data Directory
+    failures: list[str] = []
+    passed = 0
+
+    print("\n🩺 SRED Automation Doctor\n")
+
+    # ── Check 1: Environment / Interpreter ──────────────────────────────────
+    print("[Environment]")
+    print(f"  Python: {sys.version.split()[0]}")
+    print(f"  Prefix: {sys.prefix}")
+    print(f"  Run ID: {get_run_id()}")
+    passed += 1
+
+    # ── Check 2: OpenAI API Key ──────────────────────────────────────────────
+    print("\n[Configuration]")
+    api_key_ok = bool(
+        settings.OPENAI_API_KEY and settings.OPENAI_API_KEY.get_secret_value()
+    )
+    if api_key_ok:
+        print("  OPENAI_API_KEY:              ✅ Set")
+        passed += 1
+    else:
+        print("  OPENAI_API_KEY:              ❌ Missing")
+        failures.append("OPENAI_API_KEY is not set — add it to .env")
+
+    print(f"  OPENAI_MODEL_AGENT:          {settings.OPENAI_MODEL_AGENT}")
+    print(f"  OPENAI_MODEL_VISION:         {settings.OPENAI_MODEL_VISION}")
+    print(f"  OPENAI_MODEL_STRUCTURED:     {settings.OPENAI_MODEL_STRUCTURED}")
+    print(f"  PAYROLL_MISMATCH_THRESHOLD:  {settings.PAYROLL_MISMATCH_THRESHOLD}")
+
+    # ── Check 3: Embedding model non-empty ──────────────────────────────────
+    DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
+    embedding_model = settings.OPENAI_EMBEDDING_MODEL
+    if embedding_model:
+        note = "" if embedding_model == DEFAULT_EMBEDDING_MODEL else f" (non-default: {embedding_model!r})"
+        print(f"  OPENAI_EMBEDDING_MODEL:      ✅ {embedding_model}{note}")
+        passed += 1
+    else:
+        print("  OPENAI_EMBEDDING_MODEL:      ❌ Empty")
+        failures.append("OPENAI_EMBEDDING_MODEL is blank — check config.py default")
+
+    # ── Check 4: Data directory ──────────────────────────────────────────────
+    print("\n[Data Directory]")
     data_dir = Path("data")
     if data_dir.exists() and data_dir.is_dir():
-        print(f"\n[Data Directory]          ✅ Found: {data_dir.absolute()}")
+        print(f"  data/                        ✅ Found: {data_dir.absolute()}")
+        passed += 1
     else:
-        print(f"\n[Data Directory]          ❌ Missing: {data_dir.absolute()} (Create this directory if needed)")
+        print(f"  data/                        ❌ Missing: {data_dir.absolute()}")
+        failures.append(f"data/ directory not found at {data_dir.absolute()} — run `mkdir data`")
 
-    print("\nDoctor check complete.")
+    # ── Check 5: DB file / directory writability ─────────────────────────────
+    print("\n[Database]")
+    db_file = Path("data/sred.db")
+    if db_file.exists():
+        if os.access(db_file, os.W_OK):
+            print(f"  data/sred.db                 ✅ Exists and writable")
+            passed += 1
+        else:
+            print(f"  data/sred.db                 ❌ Exists but NOT writable")
+            failures.append(f"data/sred.db exists but is not writable — check file permissions")
+    elif data_dir.exists():
+        if os.access(data_dir, os.W_OK):
+            print(f"  data/sred.db                 ✅ Does not exist yet; data/ is writable (db init can create it)")
+            passed += 1
+        else:
+            print(f"  data/sred.db                 ❌ data/ directory is not writable")
+            failures.append("data/ directory is not writable — db init cannot create sred.db")
+    else:
+        # data dir missing — already captured above; skip this check
+        print(f"  data/sred.db                 ⚠️  Skipped (data/ missing)")
+
+    # ── Summary ──────────────────────────────────────────────────────────────
+    total = passed + len(failures)
+    print(f"\n{'─' * 50}")
+    if failures:
+        print(f"Result: {passed}/{total} checks passed\n")
+        for msg in failures:
+            print(f"  ❌ {msg}")
+        print()
+        raise typer.Exit(code=1)
+    else:
+        print(f"Result: {passed}/{total} checks passed — all good ✅")
+        print()
 
 
 db_app = typer.Typer(help="Database management commands.")

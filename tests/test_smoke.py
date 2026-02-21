@@ -34,4 +34,5 @@ def test_cli_doctor():
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0
         assert "SRED Automation Doctor" in result.stdout
-        assert "OPENAI_API_KEY:           ✅ Set" in result.stdout
+        assert "OPENAI_API_KEY:" in result.stdout
+        assert "✅ Set" in result.stdout

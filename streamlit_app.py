@@ -31,6 +31,8 @@ pg = st.navigation([
     st.Page("src/sred/ui/pages/2_people.py", title="People", icon="👥"),
     st.Page("src/sred/ui/pages/3_uploads.py", title="Uploads", icon="📂"),
     st.Page("src/sred/ui/pages/4_dashboard.py", title="Dashboard", icon="📊"),
+    st.Page("src/sred/ui/pages/5_search.py", title="Search", icon="🔎"),
+    st.Page("src/sred/ui/pages/6_csv_tools.py", title="CSV Tools", icon="📋"),
     st.Page("src/sred/ui/pages/7_agent.py", title="Agent Runner", icon="🤖"),
     st.Page("src/sred/ui/pages/8_tasks.py", title="Tasks & Gates", icon="🚦"),
     st.Page("src/sred/ui/pages/9_payroll.py", title="Payroll Validation", icon="💰"),

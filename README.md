@@ -48,3 +48,10 @@ Run tests:
 ```bash
 uv run pytest
 ```
+
+## Docs
+
+See `docs/README.md` for architecture and coding-assistant guidance.
+
+- `docs/REFRACTORING_BIBLE.md` — source of truth for every architectural decision until first client delivery. **Read before writing any code.**
+- `docs/CODING_ASSISTANT_PROMPT_PACK.md` — phased prompt series for staging the refactor in safe, reviewable increments.
