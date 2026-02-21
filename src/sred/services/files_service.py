@@ -1,6 +1,6 @@
 """Files use-case service. Owns ORM→DTO mapping; routers never see ORM objects."""
 from __future__ import annotations
-from fastapi import HTTPException, UploadFile
+from sred.domain.exceptions import NotFoundError
 from sred.infra.db.uow import UnitOfWork
 from sred.infra.db.repositories.run_repository import RunRepository
 from sred.infra.db.repositories.file_repository import FileRepository
@@ -14,17 +14,21 @@ class FilesService:
     def __init__(self, uow: UnitOfWork) -> None:
         self._uow = uow
 
-    async def upload_file(self, run_id: int, upload: UploadFile) -> FileRead:
+    async def upload_file(
+        self,
+        run_id: int,
+        content: bytes,
+        original_filename: str,
+        content_type: str,
+    ) -> FileRead:
         # Validate run exists
         run_repo = RunRepository(self._uow.session)
         if run_repo.get_by_id(run_id) is None:
-            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+            raise NotFoundError(f"Run {run_id} not found")
 
-        content = await upload.read()
         sha256 = compute_sha256(content)
         size_bytes = len(content)
-        mime_type = upload.content_type or "application/octet-stream"
-        original_filename = upload.filename or "upload"
+        mime_type = content_type
 
         # Deduplication: return existing record if same content in same run
         file_repo = FileRepository(self._uow.session)
@@ -57,7 +61,7 @@ class FilesService:
         # Validate run exists
         run_repo = RunRepository(self._uow.session)
         if run_repo.get_by_id(run_id) is None:
-            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+            raise NotFoundError(f"Run {run_id} not found")
 
         file_repo = FileRepository(self._uow.session)
         files = file_repo.get_by_run(run_id)

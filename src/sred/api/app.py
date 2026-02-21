@@ -1,8 +1,10 @@
 """FastAPI application factory."""
 from __future__ import annotations
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from sqlmodel import SQLModel
+from sred.domain.exceptions import NotFoundError, ConflictError
 
 
 def create_app() -> FastAPI:
@@ -28,6 +30,14 @@ def create_app() -> FastAPI:
     app.include_router(runs_router)
     app.include_router(files_router)
     app.include_router(ingest_router)
+
+    @app.exception_handler(NotFoundError)
+    def _not_found(request: Request, exc: NotFoundError) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": exc.message})
+
+    @app.exception_handler(ConflictError)
+    def _conflict(request: Request, exc: ConflictError) -> JSONResponse:
+        return JSONResponse(status_code=400, content={"detail": exc.message})
 
     @app.get("/health", tags=["ops"])
     def health() -> dict:

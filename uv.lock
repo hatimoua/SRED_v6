@@ -1398,7 +1398,6 @@ source = { editable = "." }
 dependencies = [
     { name = "duckdb" },
     { name = "fastapi" },
-    { name = "httpx" },
     { name = "loguru" },
     { name = "numpy" },
     { name = "openai" },
@@ -1426,7 +1425,6 @@ dev = [
 requires-dist = [
     { name = "duckdb", specifier = ">=1.4.4" },
     { name = "fastapi", specifier = ">=0.115" },
-    { name = "httpx", specifier = ">=0.28" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "numpy", specifier = ">=2.4.2" },
     { name = "openai", specifier = ">=2.21.0" },

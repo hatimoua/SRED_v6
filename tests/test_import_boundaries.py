@@ -36,6 +36,8 @@ BANNED_PREFIXES = (
     "sred.models",
     "sred.db",
     "sred.domain.models",
+    "sred.infra.db",
+    "sred.services",
 )
 
 # ---------------------------------------------------------------------------
@@ -143,3 +145,25 @@ def test_ui_import_boundaries() -> None:
         )
 
     assert not messages, "\n\n".join(messages)
+
+
+def test_service_import_boundaries() -> None:
+    """Service files must not import from fastapi."""
+    services_root = REPO_ROOT / "src" / "sred" / "services"
+    violations = []
+    for py_file in sorted(services_root.rglob("*.py")):
+        source = py_file.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("fastapi"):
+                violations.append(_repo_relative(py_file))
+                break
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("fastapi"):
+                        violations.append(_repo_relative(py_file))
+                        break
+    assert not violations, (
+        "Service files must not import fastapi:\n"
+        + "\n".join(f"  {v}" for v in violations)
+    )

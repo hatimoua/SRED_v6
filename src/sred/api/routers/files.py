@@ -14,7 +14,13 @@ async def upload_file(
     file: UploadFile,
     uow: UnitOfWork = Depends(get_uow),
 ) -> FileRead:
-    return await FilesService(uow).upload_file(run_id, file)
+    content = await file.read()
+    return await FilesService(uow).upload_file(
+        run_id=run_id,
+        content=content,
+        original_filename=file.filename or "upload",
+        content_type=file.content_type or "application/octet-stream",
+    )
 
 
 @router.get("", response_model=FileList)

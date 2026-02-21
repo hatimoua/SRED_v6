@@ -35,7 +35,11 @@ class UnitOfWork:
 
     def commit(self) -> None:
         """Explicit mid-operation commit (e.g. to get a generated PK)."""
+        if self._session is None:
+            raise RuntimeError("UnitOfWork is not active — use as a context manager.")
         self._session.commit()
 
     def rollback(self) -> None:
+        if self._session is None:
+            raise RuntimeError("UnitOfWork is not active — use as a context manager.")
         self._session.rollback()

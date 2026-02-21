@@ -1,6 +1,6 @@
 """Runs use-case service. Owns ORM→DTO mapping; routers never see ORM objects."""
 from __future__ import annotations
-from fastapi import HTTPException
+from sred.domain.exceptions import NotFoundError
 from sred.infra.db.uow import UnitOfWork
 from sred.infra.db.repositories.run_repository import RunRepository
 from sred.api.schemas.runs import RunCreate, RunRead, RunList
@@ -26,5 +26,5 @@ class RunsService:
         repo = RunRepository(self._uow.session)
         run = repo.get_by_id(run_id)
         if run is None:
-            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+            raise NotFoundError(f"Run {run_id} not found")
         return RunRead.model_validate(run)
