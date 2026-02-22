@@ -26,10 +26,26 @@ def create_app() -> FastAPI:
     from sred.api.routers.runs import router as runs_router
     from sred.api.routers.files import router as files_router
     from sred.api.routers.ingest import router as ingest_router
+    from sred.api.routers.people import router as people_router
+    from sred.api.routers.dashboard import router as dashboard_router
+    from sred.api.routers.logs import router as logs_router
+    from sred.api.routers.search import router as search_router
+    from sred.api.routers.tasks import router as tasks_router
+    from sred.api.routers.payroll import router as payroll_router
+    from sred.api.routers.ledger import router as ledger_router
+    from sred.api.routers.csv import router as csv_router
 
     app.include_router(runs_router)
     app.include_router(files_router)
     app.include_router(ingest_router)
+    app.include_router(people_router)
+    app.include_router(dashboard_router)
+    app.include_router(logs_router)
+    app.include_router(search_router)
+    app.include_router(tasks_router)
+    app.include_router(payroll_router)
+    app.include_router(ledger_router)
+    app.include_router(csv_router)
 
     @app.exception_handler(NotFoundError)
     def _not_found(request: Request, exc: NotFoundError) -> JSONResponse:

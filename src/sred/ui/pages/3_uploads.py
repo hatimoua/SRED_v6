@@ -1,9 +1,7 @@
 import streamlit as st
-from sqlmodel import Session, select, desc
-from sred.db import engine
-from sred.models.core import File, FileStatus
-from sred.storage.files import save_upload
+from sred.ui.api_client import get_client, APIError
 from sred.ui.state import get_run_id
+from sred.api.schemas.files import FileStatusDTO
 
 st.title("File Uploads")
 
@@ -12,93 +10,76 @@ if not run_id:
     st.error("Please select a Run first.")
     st.stop()
 
+client = get_client()
+
 # --- Uploader ---
 uploaded_files = st.file_uploader(
-    "Upload Documents", 
+    "Upload Documents",
     accept_multiple_files=True,
-    type=["csv", "pdf", "docx", "txt", "md", "json"]
+    type=["csv", "pdf", "docx", "txt", "md", "json"],
 )
 
 if uploaded_files:
-    with Session(engine) as session:
-        for uf in uploaded_files:
-            # Process one by one (in reality we might want a button to confirm process, but stream is okay)
-            # Actually, let's just process immediately as per standard Streamlit flow unless form used
-            
-            # Check dupes based on hash is tricky before reading bytes.
-            # save_upload reads bytes.
-            # We can't easily check dupe without reading or trusting name/size.
-            # Let's read and save, then check DB.
-            
-            try:
-                # 1. Save to disk (computes hash)
-                stored_path, sha256, size, mime = save_upload(run_id, uf)
-                
-                # 2. Check DB
-                existing = session.exec(
-                    select(File).where(File.run_id == run_id, File.content_hash == sha256)
-                ).first()
-                
-                if existing:
-                    st.toast(f"ℹ️ {uf.name} already uploaded.", icon="ℹ️")
-                    continue
-                
-                # 3. Create DB Record
-                new_file = File(
-                    run_id=run_id,
-                    original_filename=uf.name,
-                    path=stored_path,
-                    mime_type=mime,
-                    size_bytes=size,
-                    content_hash=sha256,
-                    status=FileStatus.UPLOADED,
-                    # legacy
-                    file_type=mime 
-                )
-                session.add(new_file)
-                session.commit()
-                st.toast(f"✅ Uploaded {uf.name}", icon="✅")
-                
-            except Exception as e:
-                st.error(f"Failed to upload {uf.name}: {e}")
+    # Snapshot existing hashes to detect deduplication
+    try:
+        existing_hashes = {f.content_hash for f in client.list_files(run_id).items}
+    except APIError:
+        existing_hashes = set()
 
-from sred.ingest.process import process_source_file
-from sred.logging import logger
+    for uf in uploaded_files:
+        try:
+            content = uf.read()
+            file_dto = client.upload_file(
+                run_id,
+                uf.name,
+                content,
+                uf.type or "application/octet-stream",
+            )
+            if file_dto.content_hash in existing_hashes:
+                st.toast(f"{uf.name} already uploaded.", icon="\u2139\ufe0f")
+            else:
+                st.toast(f"Uploaded {uf.name}", icon="\u2705")
+        except APIError as e:
+            st.error(f"Failed to upload {uf.name}: {e.detail}")
 
 st.divider()
 
 # --- List Files ---
-with Session(engine) as session:
-    files = session.exec(
-        select(File).where(File.run_id == run_id).order_by(desc(File.created_at))
-    ).all()
-    
-    if not files:
-        st.info("No files uploaded.")
-    else:
-        st.write(f"Total Files: {len(files)}")
-        
-        # Display as custom grid to allow actions
-        for f in files:
-            with st.container(border=True):
-                c1, c2, c3, c4, c5 = st.columns([3, 1, 1, 1, 2])
-                c1.write(f"**{f.original_filename}**")
-                c2.write(f.mime_type)
-                c3.write(f"{round(f.size_bytes / 1024, 1)} KB")
-                
-                # Status with icon
-                status_icon = "✅" if f.status == FileStatus.PROCESSED else "❌" if f.status == FileStatus.ERROR else "⏳"
-                c4.write(f"{status_icon} {f.status.value}")
-                
-                # Action
-                if f.status != FileStatus.PROCESSED:
-                    if c5.button("Process", key=f"proc_{f.id}"):
-                        with st.spinner("Processing..."):
-                            try:
-                                process_source_file(f.id)
-                                st.success("Done!")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Error: {e}")
-                else:
-                    c5.success("Processed")
+try:
+    file_list = client.list_files(run_id)
+except APIError as e:
+    st.error(f"Failed to load files: {e.detail}")
+    st.stop()
+
+files = file_list.items
+
+if not files:
+    st.info("No files uploaded.")
+else:
+    st.write(f"Total Files: {len(files)}")
+
+    for f in files:
+        with st.container(border=True):
+            c1, c2, c3, c4, c5 = st.columns([3, 1, 1, 1, 2])
+            c1.write(f"**{f.original_filename}**")
+            c2.write(f.mime_type)
+            c3.write(f"{round(f.size_bytes / 1024, 1)} KB")
+
+            status_icon = (
+                "\u2705" if f.status == FileStatusDTO.PROCESSED
+                else "\u274c" if f.status == FileStatusDTO.ERROR
+                else "\u23f3"
+            )
+            c4.write(f"{status_icon} {f.status.value}")
+
+            if f.status != FileStatusDTO.PROCESSED:
+                if c5.button("Process", key=f"proc_{f.id}"):
+                    with st.spinner("Processing..."):
+                        try:
+                            result = client.process_file(run_id, f.id)
+                            st.success(f"Done! {result.message}")
+                            st.rerun()
+                        except APIError as e:
+                            st.error(f"Error: {e.detail}")
+            else:
+                c5.success("Processed")

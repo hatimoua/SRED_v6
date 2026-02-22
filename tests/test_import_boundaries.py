@@ -46,21 +46,7 @@ BANNED_PREFIXES = (
 # Paths are relative to the repo root (forward slashes, POSIX-style).
 # ---------------------------------------------------------------------------
 
-KNOWN_LEGACY_VIOLATIONS = {
-    "src/sred/ui/state.py",
-    "src/sred/ui/validation.py",
-    "src/sred/ui/pages/1_run.py",
-    "src/sred/ui/pages/2_people.py",
-    "src/sred/ui/pages/3_uploads.py",
-    "src/sred/ui/pages/4_dashboard.py",
-    "src/sred/ui/pages/5_search.py",
-    "src/sred/ui/pages/6_csv_tools.py",
-    "src/sred/ui/pages/7_agent.py",
-    "src/sred/ui/pages/8_tasks.py",
-    "src/sred/ui/pages/9_payroll.py",
-    "src/sred/ui/pages/10_trace.py",
-    "src/sred/ui/pages/11_ledger.py",
-}
+KNOWN_LEGACY_VIOLATIONS: set[str] = set()  # All pages migrated to API client!
 
 # ---------------------------------------------------------------------------
 # Helpers
