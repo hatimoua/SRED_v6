@@ -2,6 +2,7 @@
 from __future__ import annotations
 from datetime import date
 from pydantic import BaseModel
+from sred.api.schemas.tasks import ContradictionRead
 
 
 class PayrollExtractRead(BaseModel):
@@ -39,4 +40,4 @@ class PayrollValidationResponse(BaseModel):
     timesheet_total: float
     overall_mismatch_pct: float
     threshold_pct: float
-    contradictions: list[dict]
+    contradictions: list[ContradictionRead]

@@ -109,7 +109,5 @@ class PayrollService:
             timesheet_total=ts_total,
             overall_mismatch_pct=overall * 100,
             threshold_pct=threshold * 100,
-            contradictions=[
-                ContradictionRead.model_validate(c).model_dump() for c in contradictions
-            ],
+            contradictions=[ContradictionRead.model_validate(c) for c in contradictions],
         )

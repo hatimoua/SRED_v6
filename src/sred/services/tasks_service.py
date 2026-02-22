@@ -1,6 +1,6 @@
 """Tasks & Gates use-case service."""
 from __future__ import annotations
-from sred.domain.exceptions import NotFoundError
+from sred.domain.exceptions import NotFoundError, ConflictError
 from sred.infra.db.uow import UnitOfWork
 from sred.infra.db.repositories.run_repository import RunRepository
 from sred.infra.db.repositories.world_repository import WorldRepository
@@ -68,6 +68,8 @@ class TasksService:
         task = repo.get_task(task_id)
         if task is None or task.run_id != run_id:
             raise NotFoundError(f"Task {task_id} not found in run {run_id}")
+        if task.status != ReviewTaskStatus.OPEN:
+            raise ConflictError(f"Task {task_id} is already {task.status.value} and cannot be resolved again")
 
         # 1. Create decision
         decision = repo.create_decision(
@@ -115,6 +117,8 @@ class TasksService:
         old_lock = repo.get_lock(lock_id)
         if old_lock is None or old_lock.run_id != run_id:
             raise NotFoundError(f"Lock {lock_id} not found in run {run_id}")
+        if not old_lock.active:
+            raise ConflictError(f"Lock {lock_id} is already superseded")
 
         # 1. Deactivate old lock
         old_lock.active = False
