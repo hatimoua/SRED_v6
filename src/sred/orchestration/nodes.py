@@ -14,6 +14,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from sred.config import settings
+
 from sqlalchemy import func, text
 from sqlmodel import Session, select
 
@@ -322,7 +324,7 @@ def make_nodes(
             messages.append(msg)
 
         raw = llm_client.chat_completions_create(
-            model="gpt-5",
+            model=settings.OPENAI_MODEL_AGENT,
             messages=messages,
             response_format=_planner_response_format(),
         )
@@ -484,12 +486,17 @@ def _get_valid_tool_names() -> set[str]:
 
 
 def _planner_response_format() -> dict[str, Any]:
-    """Build the OpenAI structured-output response_format dict."""
+    """Build the OpenAI structured-output response_format dict.
+
+    ``strict=True`` tells the API to guarantee schema adherence.  Pydantic's
+    generated schema is compatible because all fields either have defaults or
+    are required — no unsupported constructs.
+    """
     return {
         "type": "json_schema",
         "json_schema": {
             "name": "PlannerDecision",
-            "strict": False,
+            "strict": True,
             "schema": PlannerDecision.model_json_schema(),
         },
     }
