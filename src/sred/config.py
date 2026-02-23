@@ -29,9 +29,9 @@ class Settings(BaseSettings):
         description="Threshold for payroll mismatch warnings"
     )
     data_dir: Path = Field(Path("data"), description="Root directory for data files")
-    CHECKPOINT_DB: Path = Field(
+    checkpoint_db: Path = Field(
         Path("data/checkpoints.db"),
-        description="LangGraph checkpoint SQLite DB path",
+        description="Path to the LangGraph SqliteSaver checkpoint database",
     )
 
 # Singleton instance

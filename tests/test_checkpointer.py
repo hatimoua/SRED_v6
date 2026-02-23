@@ -149,3 +149,23 @@ def test_wal_mode(tmp_path):
     journal = saver.conn.execute("PRAGMA journal_mode").fetchone()[0]
     assert journal == "wal"
     saver.conn.close()
+
+
+# -------------------------------------------------------------------
+# 8. saver.setup() creates exactly 'checkpoints' and 'writes' tables
+#    (locks in the real table names for langgraph-checkpoint-sqlite==3.0.3)
+# -------------------------------------------------------------------
+def test_setup_creates_expected_tables(tmp_path):
+    db = tmp_path / "cp.db"
+    conn = sqlite3.connect(str(db))
+    saver = SqliteSaver(conn=conn)
+    saver.setup()
+
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+    )
+    tables = {row[0] for row in cursor.fetchall()}
+    conn.close()
+
+    assert "checkpoints" in tables, f"'checkpoints' table missing; got {tables}"
+    assert "writes" in tables, f"'writes' table missing; got {tables}"

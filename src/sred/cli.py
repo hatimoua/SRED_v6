@@ -165,6 +165,10 @@ def graph_reset(
         print("❌ Provide --run-id, --run-id + --session-id, or --all")
         raise typer.Exit(code=1)
 
+    if all_ and run_id is not None:
+        print("❌ --all cannot be combined with --run-id.")
+        raise typer.Exit(code=1)
+
     if session_id is not None and run_id is None:
         print("❌ --session-id requires --run-id")
         raise typer.Exit(code=1)
