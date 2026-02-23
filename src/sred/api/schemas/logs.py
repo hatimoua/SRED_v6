@@ -10,6 +10,7 @@ class ToolCallLogRead(BaseModel):
     id: int
     run_id: int
     session_id: str | None = None
+    thread_id: str | None = None
     tool_name: str
     arguments_json: str
     result_json: str

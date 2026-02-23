@@ -197,11 +197,25 @@ def _log_llm_call(session: Session, run_id: int, model: str, messages: list, res
     session.commit()
 
 
-def _log_tool_call(session: Session, run_id: int, tool_name: str, args_json: str, result: dict, success: bool, duration_ms: int, session_id: str | None = None) -> None:
+def _log_tool_call(
+    session: Session,
+    run_id: int,
+    tool_name: str,
+    args_json: str,
+    result: dict,
+    success: bool,
+    duration_ms: int,
+    session_id: str | None = None,
+    thread_id: str | None = None,
+) -> None:
     """Persist a tool call to the database."""
+    if thread_id is None and session_id:
+        thread_id = f"{run_id}:{session_id}"
+
     log = ToolCallLog(
         run_id=run_id,
         session_id=session_id,
+        thread_id=thread_id,
         tool_name=tool_name,
         arguments_json=args_json,
         result_json=json.dumps(result, default=str)[:4000],

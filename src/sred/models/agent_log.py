@@ -9,6 +9,7 @@ class ToolCallLog(TimestampMixin, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     run_id: int = Field(index=True)
     session_id: Optional[str] = Field(default=None, index=True, description="UUID grouping calls from one agent loop invocation")
+    thread_id: Optional[str] = Field(default=None, index=True, description="Deterministic thread ID '{run_id}:{session_id}'")
 
     tool_name: str
     arguments_json: str  # JSON string of tool arguments

@@ -173,6 +173,9 @@ class GraphState(TypedDict, total=False):
     # Tool execution
     tool_queue: list[dict]  # list of ToolRequest dicts
     last_tool_result: dict
+    # Gate + review payloads
+    gate_snapshot: dict
+    needs_review_payload: dict
     # Control flow
     stop_reason: str  # "complete"|"max_steps"|"blocked"|"error"|""
     is_blocked: bool

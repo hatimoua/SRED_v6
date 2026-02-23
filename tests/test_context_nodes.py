@@ -6,10 +6,11 @@ MemoryDocs + Segments (with FTS index) and verifies each node independently.
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import date, datetime, timezone
 
 from sqlalchemy import text
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from sred.models.agent_log import ToolCallLog
 from sred.models.alias import AliasStatus, PersonAlias
@@ -109,12 +110,19 @@ def _seed_segment(session: Session, run_id: int, file_id: int, content: str, *, 
     return seg
 
 
-def _seed_contradiction(session: Session, run_id: int, *, status: ContradictionStatus = ContradictionStatus.OPEN) -> Contradiction:
+def _seed_contradiction(
+    session: Session,
+    run_id: int,
+    *,
+    status: ContradictionStatus = ContradictionStatus.OPEN,
+    severity: ContradictionSeverity = ContradictionSeverity.MEDIUM,
+    contradiction_type: ContradictionType = ContradictionType.MISSING_RATE,
+) -> Contradiction:
     c = Contradiction(
         run_id=run_id,
         issue_key=f"TEST:{_sha(str(run_id) + str(status))[:8]}",
-        contradiction_type=ContradictionType.MISSING_RATE,
-        severity=ContradictionSeverity.MEDIUM,
+        contradiction_type=contradiction_type,
+        severity=severity,
         description="test contradiction",
         status=status,
     )
@@ -552,3 +560,139 @@ def test_context_compiler_preserves_within_budget(use_test_engine):
         assert len(compiled.memory_summaries.entries) == 1
         assert len(compiled.evidence_pack.items) == 1
         assert compiled.compiled_at is not None
+
+
+# ---------------------------------------------------------------------------
+# Tests — Nodes 6/7/8: tool_executor, gate_evaluator, human_gate
+# ---------------------------------------------------------------------------
+
+
+def test_tool_executor_executes_and_logs_with_thread_id(use_test_engine):
+    with Session(use_test_engine) as session:
+        run = _seed_run(session)
+        _seed_person(session, run.id, name="Alice", rate=100.0)
+        session.commit()
+
+        nodes = make_nodes(session)
+        state = init_state(run.id, "sess-abc", "list people")
+        state["tool_queue"] = [
+            {"tool_name": "people_list", "arguments": {}},
+        ]
+
+        result = nodes["tool_executor"](state)
+
+        assert result["tool_queue"] == []
+        assert result["last_tool_result"]["tool_name"] == "people_list"
+        assert result["last_tool_result"]["success"] is True
+        assert result["last_tool_result"]["result"]["count"] == 1
+        assert result["messages"][-1]["role"] == "tool"
+
+        logs = session.exec(
+            select(ToolCallLog)
+            .where(ToolCallLog.run_id == run.id)
+            .order_by(ToolCallLog.id)
+        ).all()
+        assert len(logs) == 1
+        log = logs[0]
+        assert log.run_id == run.id
+        assert log.session_id == "sess-abc"
+        assert log.thread_id == f"{run.id}:sess-abc"
+        assert log.tool_name == "people_list"
+        assert json.loads(log.arguments_json) == {}
+        assert log.success is True
+
+
+def test_gate_evaluator_is_deterministic_and_db_backed(use_test_engine):
+    with Session(use_test_engine) as session:
+        run = _seed_run(session)
+        contradiction = _seed_contradiction(
+            session,
+            run.id,
+            severity=ContradictionSeverity.BLOCKING,
+            contradiction_type=ContradictionType.MISSING_EVIDENCE,
+        )
+        task = _seed_task(session, run.id, status=ReviewTaskStatus.OPEN)
+        task.severity = ContradictionSeverity.BLOCKING
+        lock = _seed_lock(session, run.id, active=True)
+        session.add(task)
+        session.commit()
+
+        nodes = make_nodes(session)
+        state = init_state(run.id, "s1", "gate check")
+
+        r1 = nodes["gate_evaluator"](state)
+        r2 = nodes["gate_evaluator"](state)
+        assert r1 == r2
+        assert r1["is_blocked"] is True
+        assert r1["gate_snapshot"]["counts"] == {
+            "blocking_contradictions": 1,
+            "required_tasks": 1,
+            "active_locks": 1,
+        }
+
+        contradiction.status = ContradictionStatus.RESOLVED
+        task.status = ReviewTaskStatus.RESOLVED
+        lock.active = False
+        session.add(contradiction)
+        session.add(task)
+        session.add(lock)
+        session.commit()
+
+        r3 = nodes["gate_evaluator"](state)
+        assert r3["is_blocked"] is False
+        assert r3["gate_snapshot"]["counts"] == {
+            "blocking_contradictions": 0,
+            "required_tasks": 0,
+            "active_locks": 0,
+        }
+
+
+def test_human_gate_assembles_strict_needs_review_payload(use_test_engine):
+    with Session(use_test_engine) as session:
+        run = _seed_run(session)
+        contradiction = _seed_contradiction(
+            session,
+            run.id,
+            severity=ContradictionSeverity.BLOCKING,
+            contradiction_type=ContradictionType.MISSING_EVIDENCE,
+        )
+        task = _seed_task(session, run.id, status=ReviewTaskStatus.OPEN)
+        task.severity = ContradictionSeverity.BLOCKING
+        lock = _seed_lock(session, run.id, active=True)
+        session.add(task)
+        session.commit()
+
+        nodes = make_nodes(session)
+        state = init_state(run.id, "session-9", "blocked flow")
+        state.update(nodes["gate_evaluator"](state))
+
+        result = nodes["human_gate"](state)
+        payload = result["needs_review_payload"]
+
+        assert result["is_blocked"] is True
+        assert result["stop_reason"] == "blocked"
+        assert set(payload.keys()) == {
+            "status",
+            "run_id",
+            "session_id",
+            "thread_id",
+            "required_actions",
+            "missing_evidence",
+            "blocking_contradictions",
+            "required_tasks",
+            "active_locks",
+        }
+        assert payload["status"] == "NEEDS_REVIEW"
+        assert payload["run_id"] == run.id
+        assert payload["session_id"] == "session-9"
+        assert payload["thread_id"] == f"{run.id}:session-9"
+        assert {a["action"] for a in payload["required_actions"]} == {
+            "RESOLVE_TASK",
+            "RESOLVE_CONTRADICTION",
+            "SUPERSEDE_LOCK",
+        }
+        assert payload["missing_evidence"] == [
+            {"issue_key": contradiction.issue_key, "reason": contradiction.description}
+        ]
+        assert payload["required_tasks"][0]["id"] == task.id
+        assert payload["active_locks"][0]["id"] == lock.id

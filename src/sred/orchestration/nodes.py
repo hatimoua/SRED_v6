@@ -1,8 +1,9 @@
 """Deterministic context-lane nodes for LangGraph orchestration.
 
 Each node follows the LangGraph convention: receives GraphState, returns a
-partial state dict.  The five deterministic nodes are pure DB reads — no LLM
-calls.  When an ``LLMClient`` is provided, a ``planner`` node is also returned.
+partial state dict.  Deterministic nodes are DB-backed and side-effect free
+except ``tool_executor`` (which writes tool logs/DB updates).  When an
+``LLMClient`` is provided, a ``planner`` node is also returned.
 
 Use ``make_nodes(session)`` to get a dict of node functions closed over a
 SQLAlchemy Session, keeping nodes testable without FastAPI.
@@ -11,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -28,8 +30,16 @@ from sred.infra.db.repositories.log_repository import LogRepository
 from sred.models.alias import PersonAlias
 from sred.models.core import FileStatus, Segment, File
 from sred.models.finance import StagingStatus, StagingRowType
+from sred.models.agent_log import ToolCallLog
 from sred.models.memory import MemoryDoc
-from sred.models.world import ContradictionStatus, ReviewTaskStatus
+from sred.models.world import (
+    Contradiction,
+    ContradictionSeverity,
+    ContradictionStatus,
+    DecisionLock,
+    ReviewTask,
+    ReviewTaskStatus,
+)
 from sred.orchestration.llm_protocol import LLMClient
 from sred.orchestration.state import (
     ContextPacket,
@@ -297,7 +307,211 @@ def make_nodes(
         return {"context_packet": packet.model_dump()}
 
     # ------------------------------------------------------------------
-    # Node 6 — planner (LLM, bounded)
+    # Shared helper — gate snapshot from DB truth (deterministic)
+    # ------------------------------------------------------------------
+    def _build_gate_snapshot(run_id: int) -> dict[str, Any]:
+        blocking_contradictions = list(
+            session.exec(
+                select(Contradiction).where(
+                    Contradiction.run_id == run_id,
+                    Contradiction.severity == ContradictionSeverity.BLOCKING,
+                    Contradiction.status == ContradictionStatus.OPEN,
+                ).order_by(Contradiction.id)
+            ).all()
+        )
+        required_tasks = list(
+            session.exec(
+                select(ReviewTask).where(
+                    ReviewTask.run_id == run_id,
+                    ReviewTask.severity == ContradictionSeverity.BLOCKING,
+                    ReviewTask.status == ReviewTaskStatus.OPEN,
+                ).order_by(ReviewTask.id)
+            ).all()
+        )
+        active_locks = list(
+            session.exec(
+                select(DecisionLock).where(
+                    DecisionLock.run_id == run_id,
+                    DecisionLock.active == True,  # noqa: E712
+                ).order_by(DecisionLock.id)
+            ).all()
+        )
+
+        return {
+            "blocking_contradictions": [
+                {
+                    "id": c.id,
+                    "issue_key": c.issue_key,
+                    "type": c.contradiction_type.value if hasattr(c.contradiction_type, "value") else str(c.contradiction_type),
+                    "severity": c.severity.value if hasattr(c.severity, "value") else str(c.severity),
+                    "description": c.description,
+                }
+                for c in blocking_contradictions
+            ],
+            "required_tasks": [
+                {
+                    "id": t.id,
+                    "issue_key": t.issue_key,
+                    "title": t.title,
+                    "severity": t.severity.value if hasattr(t.severity, "value") else str(t.severity),
+                    "status": t.status.value if hasattr(t.status, "value") else str(t.status),
+                }
+                for t in required_tasks
+            ],
+            "active_locks": [
+                {
+                    "id": lk.id,
+                    "issue_key": lk.issue_key,
+                    "reason": lk.reason,
+                    "decision_id": lk.decision_id,
+                }
+                for lk in active_locks
+            ],
+            "counts": {
+                "blocking_contradictions": len(blocking_contradictions),
+                "required_tasks": len(required_tasks),
+                "active_locks": len(active_locks),
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # Node 6 — tool_executor (deterministic tool call execution)
+    # ------------------------------------------------------------------
+    def tool_executor(state: GraphState) -> dict:
+        run_id: int = state["run_id"]
+        session_id: str | None = state.get("session_id")
+        thread_id: str | None = state.get("thread_id")
+        if thread_id is None and session_id:
+            thread_id = f"{run_id}:{session_id}"
+        queue_raw = list(state.get("tool_queue", []) or [])
+        if not queue_raw:
+            return {}
+
+        try:
+            request = ToolRequest.model_validate(queue_raw[0])
+        except Exception as exc:
+            return {
+                "tool_queue": queue_raw[1:],
+                "errors": state.get("errors", []) + [f"Invalid tool request: {exc}"],
+            }
+
+        tool_name = request.tool_name
+        arguments = request.arguments or {}
+        args_json = json.dumps(arguments, sort_keys=True, default=str)
+
+        started = time.monotonic()
+        success = True
+        try:
+            _ensure_tools_registered()
+            from sred.agent.registry import get_tool_handler
+
+            handler = get_tool_handler(tool_name)
+            result = handler(session, run_id, **arguments)
+            session.commit()
+        except KeyError:
+            result = {"error": f"Unknown tool: {tool_name}"}
+            success = False
+            session.rollback()
+        except Exception as exc:
+            logger.exception("Tool execution failed for %s", tool_name)
+            result = {"error": str(exc)}
+            success = False
+            session.rollback()
+
+        duration_ms = int((time.monotonic() - started) * 1000)
+        tool_log = ToolCallLog(
+            run_id=run_id,
+            session_id=session_id,
+            thread_id=thread_id,
+            tool_name=tool_name,
+            arguments_json=args_json,
+            result_json=json.dumps(result, default=str)[:4000],
+            success=success,
+            duration_ms=duration_ms,
+        )
+        session.add(tool_log)
+        session.commit()
+
+        tool_message = {
+            "role": "tool",
+            "name": tool_name,
+            "content": json.dumps(result, default=str),
+        }
+
+        update: dict[str, Any] = {
+            "tool_queue": queue_raw[1:],
+            "last_tool_result": {
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "result": result,
+                "success": success,
+                "duration_ms": duration_ms,
+            },
+            "messages": state.get("messages", []) + [tool_message],
+        }
+        if not success:
+            update["errors"] = state.get("errors", []) + [f"Tool {tool_name} failed"]
+        return update
+
+    # ------------------------------------------------------------------
+    # Node 7 — gate_evaluator (deterministic, DB-backed)
+    # ------------------------------------------------------------------
+    def gate_evaluator(state: GraphState) -> dict:
+        run_id: int = state["run_id"]
+        snapshot = _build_gate_snapshot(run_id)
+        blocked = any(snapshot["counts"].values())
+        return {
+            "gate_snapshot": snapshot,
+            "is_blocked": blocked,
+        }
+
+    # ------------------------------------------------------------------
+    # Node 8 — human_gate (assemble strict NEEDS_REVIEW payload)
+    # ------------------------------------------------------------------
+    def human_gate(state: GraphState) -> dict:
+        run_id: int = state["run_id"]
+        snapshot = state.get("gate_snapshot") or _build_gate_snapshot(run_id)
+
+        required_actions: list[dict[str, Any]] = []
+        required_actions.extend(
+            {"action": "RESOLVE_TASK", "task_id": t["id"], "issue_key": t["issue_key"]}
+            for t in snapshot["required_tasks"]
+        )
+        required_actions.extend(
+            {"action": "RESOLVE_CONTRADICTION", "contradiction_id": c["id"], "issue_key": c["issue_key"]}
+            for c in snapshot["blocking_contradictions"]
+        )
+        required_actions.extend(
+            {"action": "SUPERSEDE_LOCK", "lock_id": lk["id"], "issue_key": lk["issue_key"]}
+            for lk in snapshot["active_locks"]
+        )
+
+        missing_evidence = [
+            {"issue_key": c["issue_key"], "reason": c["description"]}
+            for c in snapshot["blocking_contradictions"]
+            if c["type"] == "MISSING_EVIDENCE"
+        ]
+
+        payload = {
+            "status": "NEEDS_REVIEW",
+            "run_id": run_id,
+            "session_id": state.get("session_id"),
+            "thread_id": state.get("thread_id"),
+            "required_actions": required_actions,
+            "missing_evidence": missing_evidence,
+            "blocking_contradictions": snapshot["blocking_contradictions"],
+            "required_tasks": snapshot["required_tasks"],
+            "active_locks": snapshot["active_locks"],
+        }
+        return {
+            "is_blocked": True,
+            "stop_reason": "blocked",
+            "gate_snapshot": snapshot,
+            "needs_review_payload": payload,
+        }
+
+    # ------------------------------------------------------------------
+    # Node 9 — planner (LLM, bounded)
     # ------------------------------------------------------------------
     def planner(state: GraphState) -> dict:
         assert llm_client is not None, "planner node requires an LLMClient"
@@ -378,6 +592,9 @@ def make_nodes(
         "memory_retrieve": memory_retrieve,
         "retrieve_evidence_pack": retrieve_evidence_pack,
         "context_compiler": context_compiler,
+        "tool_executor": tool_executor,
+        "gate_evaluator": gate_evaluator,
+        "human_gate": human_gate,
     }
     if llm_client is not None:
         nodes["planner"] = planner
@@ -479,6 +696,7 @@ def _build_planner_system_prompt(packet: ContextPacket, state: GraphState) -> st
 def _get_valid_tool_names() -> set[str]:
     """Return the set of registered tool names (lazy import)."""
     try:
+        _ensure_tools_registered()
         from sred.agent.registry import TOOL_REGISTRY
         return set(TOOL_REGISTRY.keys())
     except ImportError:
@@ -517,3 +735,12 @@ def _current_packet(state: GraphState) -> ContextPacket:
 def _est_tokens(text: str) -> int:
     """Rough token estimate: chars / 4."""
     return len(text) // 4
+
+
+def _ensure_tools_registered() -> None:
+    """Import tool module for side-effect registration in TOOL_REGISTRY."""
+    try:
+        import sred.agent.tools  # noqa: F401
+    except Exception:
+        # Planner/tool execution will fail gracefully if registry remains empty.
+        return
