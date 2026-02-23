@@ -11,7 +11,9 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         from sred.infra.db.engine import engine  # triggers WAL pragma + mapper registration
+        from sred.infra.db.schema_compat import ensure_schema_compat
         SQLModel.metadata.create_all(engine)
+        ensure_schema_compat(engine)
         from sred.search.fts import setup_fts
         setup_fts()
         yield

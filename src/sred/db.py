@@ -1,6 +1,7 @@
 from sqlmodel import SQLModel, create_engine, Session
 from pathlib import Path
 from sred.logging import logger
+from sred.infra.db.schema_compat import ensure_schema_compat
 
 # Import all models at module level so mappers are registered once.
 # This prevents "Multiple classes found" and "Table already defined"
@@ -19,6 +20,7 @@ def init_db():
     
     logger.info(f"Initializing database at {DB_URL}")
     SQLModel.metadata.create_all(engine)
+    ensure_schema_compat(engine)
 
 def get_session():
     with Session(engine) as session:

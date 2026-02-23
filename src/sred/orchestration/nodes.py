@@ -55,6 +55,7 @@ from sred.orchestration.state import (
     ToolOutcome,
     ToolRequest,
     WorldSnapshot,
+    make_thread_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -382,7 +383,7 @@ def make_nodes(
         session_id: str | None = state.get("session_id")
         thread_id: str | None = state.get("thread_id")
         if thread_id is None and session_id:
-            thread_id = f"{run_id}:{session_id}"
+            thread_id = make_thread_id(run_id, session_id)
         queue_raw = list(state.get("tool_queue", []) or [])
         if not queue_raw:
             return {}
@@ -398,6 +399,7 @@ def make_nodes(
         tool_name = request.tool_name
         arguments = request.arguments or {}
         args_json = json.dumps(arguments, sort_keys=True, default=str)
+        tool_call_id = request.idempotency_key or f"tool_call_{run_id}_{time.time_ns()}"
 
         started = time.monotonic()
         success = True
@@ -432,9 +434,20 @@ def make_nodes(
         session.add(tool_log)
         session.commit()
 
+        assistant_tool_call_message = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {"name": tool_name, "arguments": args_json},
+                }
+            ],
+        }
         tool_message = {
             "role": "tool",
-            "name": tool_name,
+            "tool_call_id": tool_call_id,
             "content": json.dumps(result, default=str),
         }
 
@@ -447,8 +460,10 @@ def make_nodes(
                 "success": success,
                 "duration_ms": duration_ms,
             },
-            "messages": state.get("messages", []) + [tool_message],
+            "messages": state.get("messages", []) + [assistant_tool_call_message, tool_message],
         }
+        if state.get("thread_id") is None and thread_id is not None:
+            update["thread_id"] = thread_id
         if not success:
             update["errors"] = state.get("errors", []) + [f"Tool {tool_name} failed"]
         return update
@@ -470,6 +485,10 @@ def make_nodes(
     # ------------------------------------------------------------------
     def human_gate(state: GraphState) -> dict:
         run_id: int = state["run_id"]
+        session_id: str | None = state.get("session_id")
+        thread_id: str | None = state.get("thread_id")
+        if thread_id is None and session_id:
+            thread_id = make_thread_id(run_id, session_id)
         snapshot = state.get("gate_snapshot") or _build_gate_snapshot(run_id)
 
         required_actions: list[dict[str, Any]] = []
@@ -495,20 +514,23 @@ def make_nodes(
         payload = {
             "status": "NEEDS_REVIEW",
             "run_id": run_id,
-            "session_id": state.get("session_id"),
-            "thread_id": state.get("thread_id"),
+            "session_id": session_id,
+            "thread_id": thread_id,
             "required_actions": required_actions,
             "missing_evidence": missing_evidence,
             "blocking_contradictions": snapshot["blocking_contradictions"],
             "required_tasks": snapshot["required_tasks"],
             "active_locks": snapshot["active_locks"],
         }
-        return {
+        update: dict[str, Any] = {
             "is_blocked": True,
             "stop_reason": "blocked",
             "gate_snapshot": snapshot,
             "needs_review_payload": payload,
         }
+        if state.get("thread_id") is None and thread_id is not None:
+            update["thread_id"] = thread_id
+        return update
 
     # ------------------------------------------------------------------
     # Node 9 — planner (LLM, bounded)
