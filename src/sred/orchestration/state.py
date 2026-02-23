@@ -176,6 +176,10 @@ class GraphState(TypedDict, total=False):
     # Gate + review payloads
     gate_snapshot: dict
     needs_review_payload: dict
+    # Output assembly
+    summary_text: str
+    final_payload: dict
+    finalized: bool
     # Control flow
     stop_reason: str  # "complete"|"max_steps"|"blocked"|"error"|""
     is_blocked: bool

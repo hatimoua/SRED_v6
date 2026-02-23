@@ -533,7 +533,63 @@ def make_nodes(
         return update
 
     # ------------------------------------------------------------------
-    # Node 9 — planner (LLM, bounded)
+    # Node 9 — summarizer (deterministic turn summary)
+    # ------------------------------------------------------------------
+    def summarizer(state: GraphState) -> dict:
+        stop_reason = state.get("stop_reason", "")
+        summary = "Turn complete."
+        if stop_reason == "blocked":
+            summary = "Turn paused for human review."
+        elif stop_reason == "error":
+            summary = "Turn stopped due to an error."
+        elif stop_reason == "max_steps":
+            summary = "Turn stopped after reaching max steps."
+        elif state.get("last_tool_result"):
+            ltr = state["last_tool_result"]
+            summary = (
+                f"Executed tool {ltr.get('tool_name')} "
+                f"({'success' if ltr.get('success') else 'failed'})."
+            )
+        return {"summary_text": summary}
+
+    # ------------------------------------------------------------------
+    # Node 10 — finalizer (normalize terminal payload)
+    # ------------------------------------------------------------------
+    def finalizer(state: GraphState) -> dict:
+        stop_reason = state.get("stop_reason", "")
+        status = "OK"
+        message = ""
+        next_actions: list[dict[str, Any]] = []
+
+        if stop_reason == "blocked":
+            status = "NEEDS_REVIEW"
+            message = "Human review required before continuing."
+            review_payload = state.get("needs_review_payload") or {}
+            next_actions = list(review_payload.get("required_actions") or [])
+        elif stop_reason in {"error", "max_steps"}:
+            status = "ERROR"
+            errs = state.get("errors", [])
+            message = errs[-1] if errs else f"Agent stopped with reason: {stop_reason}"
+        else:
+            # Use latest assistant message when planner finalized the turn.
+            for msg in reversed(state.get("messages", [])):
+                if msg.get("role") == "assistant" and msg.get("content"):
+                    message = str(msg.get("content"))
+                    break
+            if not message:
+                message = state.get("summary_text", "Turn complete.")
+
+        return {
+            "finalized": True,
+            "final_payload": {
+                "status": status,
+                "message": message,
+                "next_actions": next_actions,
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # Node 11 — planner (LLM, bounded)
     # ------------------------------------------------------------------
     def planner(state: GraphState) -> dict:
         assert llm_client is not None, "planner node requires an LLMClient"
@@ -617,6 +673,8 @@ def make_nodes(
         "tool_executor": tool_executor,
         "gate_evaluator": gate_evaluator,
         "human_gate": human_gate,
+        "summarizer": summarizer,
+        "finalizer": finalizer,
     }
     if llm_client is not None:
         nodes["planner"] = planner
