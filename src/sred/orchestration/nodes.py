@@ -1,15 +1,18 @@
 """Deterministic context-lane nodes for LangGraph orchestration.
 
 Each node follows the LangGraph convention: receives GraphState, returns a
-partial state dict.  All five nodes are pure DB reads — no LLM calls.
+partial state dict.  The five deterministic nodes are pure DB reads — no LLM
+calls.  When an ``LLMClient`` is provided, a ``planner`` node is also returned.
 
 Use ``make_nodes(session)`` to get a dict of node functions closed over a
 SQLAlchemy Session, keeping nodes testable without FastAPI.
 """
 from __future__ import annotations
 
+import json
+import logging
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Any, Callable
 
 from sqlalchemy import func, text
 from sqlmodel import Session, select
@@ -25,6 +28,7 @@ from sred.models.core import FileStatus, Segment, File
 from sred.models.finance import StagingStatus, StagingRowType
 from sred.models.memory import MemoryDoc
 from sred.models.world import ContradictionStatus, ReviewTaskStatus
+from sred.orchestration.llm_protocol import LLMClient
 from sred.orchestration.state import (
     ContextPacket,
     EvidenceItem,
@@ -33,18 +37,28 @@ from sred.orchestration.state import (
     MemoryEntry,
     MemorySummaries,
     PeopleTimeAnchor,
+    PlannerDecision,
     PersonAnchor,
     TokenBudget,
     ToolOutcome,
+    ToolRequest,
     WorldSnapshot,
 )
 
+logger = logging.getLogger(__name__)
 
-def make_nodes(session: Session) -> dict[str, Callable]:
+
+def make_nodes(
+    session: Session,
+    llm_client: LLMClient | None = None,
+) -> dict[str, Callable]:
     """Return a dict of node functions closed over *session*.
 
     Each value is a ``def node(state: GraphState) -> dict`` callable
     suitable for use as a LangGraph node.
+
+    When *llm_client* is provided, a ``"planner"`` node is included that
+    calls the LLM to decide the next tool call or finalization.
     """
 
     # ------------------------------------------------------------------
@@ -280,12 +294,204 @@ def make_nodes(session: Session) -> dict[str, Callable]:
         packet.compiled_at = datetime.now(timezone.utc)
         return {"context_packet": packet.model_dump()}
 
-    return {
+    # ------------------------------------------------------------------
+    # Node 6 — planner (LLM, bounded)
+    # ------------------------------------------------------------------
+    def planner(state: GraphState) -> dict:
+        assert llm_client is not None, "planner node requires an LLMClient"
+
+        step_count: int = state.get("step_count", 0)
+        max_steps: int = state.get("max_steps", 10)
+
+        # Guard: max steps reached — stop without calling LLM
+        if step_count >= max_steps:
+            return {
+                "stop_reason": "max_steps",
+                "tool_queue": [],
+            }
+
+        packet = _current_packet(state)
+        system_prompt = _build_planner_system_prompt(packet, state)
+
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": state.get("user_message", "")},
+        ]
+        # Append prior conversation messages (tool results, etc.)
+        for msg in state.get("messages", []):
+            messages.append(msg)
+
+        raw = llm_client.chat_completions_create(
+            model="gpt-5",
+            messages=messages,
+            response_format=_planner_response_format(),
+        )
+
+        try:
+            decision = PlannerDecision.model_validate_json(raw)
+        except Exception as exc:
+            logger.error("Planner output failed validation: %s", exc)
+            return {
+                "stop_reason": "error",
+                "errors": state.get("errors", []) + [f"Planner parse error: {exc}"],
+                "tool_queue": [],
+            }
+
+        # Validate tool names against registry
+        if not decision.done:
+            valid_names = _get_valid_tool_names()
+            for tr in decision.tool_requests:
+                if tr.tool_name not in valid_names:
+                    logger.error("Planner requested unknown tool: %s", tr.tool_name)
+                    return {
+                        "stop_reason": "error",
+                        "errors": state.get("errors", [])
+                        + [f"Unknown tool: {tr.tool_name}"],
+                        "tool_queue": [],
+                    }
+
+        if decision.done:
+            assistant_msg = {
+                "role": "assistant",
+                "content": decision.draft_response,
+            }
+            return {
+                "stop_reason": decision.stop_reason,
+                "messages": state.get("messages", []) + [assistant_msg],
+                "tool_queue": [],
+            }
+
+        # Not done — enqueue tool requests
+        return {
+            "tool_queue": [tr.model_dump() for tr in decision.tool_requests],
+            "step_count": step_count + 1,
+        }
+
+    # ------------------------------------------------------------------
+    # Assemble return dict
+    # ------------------------------------------------------------------
+    nodes = {
         "load_world_snapshot": load_world_snapshot,
         "build_anchor_lane": build_anchor_lane,
         "memory_retrieve": memory_retrieve,
         "retrieve_evidence_pack": retrieve_evidence_pack,
         "context_compiler": context_compiler,
+    }
+    if llm_client is not None:
+        nodes["planner"] = planner
+    return nodes
+
+
+# ---------------------------------------------------------------------------
+# Planner prompt construction
+# ---------------------------------------------------------------------------
+
+_PLANNER_PREAMBLE = """\
+You are the SR&ED Automation Planner.  Your job is to decide the NEXT action
+for processing a Canadian SR&ED tax-credit claim.
+
+RULES:
+1. You may ONLY reference facts present in the context below.  Never invent
+   data, file names, people, or amounts.
+2. You may request exactly ONE tool call at a time.
+3. When the task is complete or you need human input, set done=True with an
+   appropriate stop_reason ("complete" or "ask_user") and a draft_response.
+4. Keep reasoning concise.
+5. Respond with valid JSON matching the PlannerDecision schema.
+"""
+
+
+def _build_planner_system_prompt(packet: ContextPacket, state: GraphState) -> str:
+    """Render the ContextPacket lanes + available tools into a system prompt."""
+    sections: list[str] = [_PLANNER_PREAMBLE]
+
+    # Lane 1 — World Snapshot
+    if packet.world_snapshot:
+        ws = packet.world_snapshot
+        sections.append(
+            f"## World Snapshot (DB Truth)\n"
+            f"Run {ws.run_id} — status: {ws.run_status}\n"
+            f"Files: {ws.file_count} ({ws.files_processed} processed) | "
+            f"People: {ws.people_count} (pending rates: {ws.pending_rates})\n"
+            f"Contradictions: {ws.open_contradictions} open | "
+            f"Tasks: {ws.open_tasks} open | Locks: {ws.active_locks}\n"
+            f"Staging: {ws.staging_total} total ({ws.staging_pending} pending, "
+            f"{ws.staging_promoted} promoted) | Ledger rows: {ws.ledger_count}"
+        )
+        if ws.last_tool_outcomes:
+            outcomes = "\n".join(
+                f"  - {o.name}: {'OK' if o.success else 'FAIL'} — {o.summary}"
+                for o in ws.last_tool_outcomes
+            )
+            sections.append(f"Recent tool results:\n{outcomes}")
+
+    # Lane 2 — People & Time Anchor
+    if packet.people_time_anchor:
+        pta = packet.people_time_anchor
+        people_lines = "\n".join(
+            f"  - {p.name} (id={p.person_id}, role={p.role}, "
+            f"rate={'$'+str(p.hourly_rate) if p.hourly_rate else 'N/A'}, "
+            f"status={p.rate_status})"
+            for p in pta.people
+        )
+        sections.append(
+            f"## People & Time Anchor\n"
+            f"Aliases: {pta.alias_confirmed}/{pta.alias_total} confirmed\n"
+            f"Staging rows: {pta.timesheet_staging_rows} timesheet, "
+            f"{pta.payroll_staging_rows} payroll\n"
+            f"People:\n{people_lines}" if people_lines else
+            f"## People & Time Anchor\n"
+            f"Aliases: {pta.alias_confirmed}/{pta.alias_total} confirmed\n"
+            f"Staging rows: {pta.timesheet_staging_rows} timesheet, "
+            f"{pta.payroll_staging_rows} payroll\nPeople: (none)"
+        )
+
+    # Lane 3 — Memory Summaries
+    if packet.memory_summaries and packet.memory_summaries.entries:
+        mem_lines = "\n".join(
+            f"  - [{e.memory_id}] {e.path}: {e.snippet}"
+            for e in packet.memory_summaries.entries
+        )
+        sections.append(f"## Memory Summaries\n{mem_lines}")
+
+    # Lane 4 — Evidence Pack
+    if packet.evidence_pack and packet.evidence_pack.items:
+        ev_lines = "\n".join(
+            f"  - [seg {it.segment_id}] {it.original_filename or 'unknown'}"
+            f" p{it.page_number} r{it.row_number}: "
+            f"{it.content[:120]}"
+            for it in packet.evidence_pack.items
+        )
+        sections.append(
+            f"## Evidence Pack (query: {packet.evidence_pack.query_used})\n{ev_lines}"
+        )
+
+    # Available tools
+    tool_names = sorted(_get_valid_tool_names())
+    if tool_names:
+        sections.append(f"## Available Tools\n{', '.join(tool_names)}")
+
+    return "\n\n".join(sections)
+
+
+def _get_valid_tool_names() -> set[str]:
+    """Return the set of registered tool names (lazy import)."""
+    try:
+        from sred.agent.registry import TOOL_REGISTRY
+        return set(TOOL_REGISTRY.keys())
+    except ImportError:
+        return set()
+
+
+def _planner_response_format() -> dict[str, Any]:
+    """Build the OpenAI structured-output response_format dict."""
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "PlannerDecision",
+            "strict": False,
+            "schema": PlannerDecision.model_json_schema(),
+        },
     }
 
 

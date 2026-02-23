@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TypedDict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 GRAPH_STATE_VERSION: int = 1
 
@@ -119,6 +119,40 @@ class ToolRequest(BaseModel):
     tool_name: str
     arguments: dict = Field(default_factory=dict)
     idempotency_key: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# PlannerDecision (structured output from planner LLM call)
+# ---------------------------------------------------------------------------
+
+
+class PlannerDecision(BaseModel):
+    """Schema-validated output from the planner node's LLM call.
+
+    Invariants enforced by ``validate_consistency``:
+    - ``done=True`` → must have ``stop_reason`` + ``draft_response``, no ``tool_requests``
+    - ``done=False`` → must have ≥1 ``tool_requests``
+    """
+
+    done: bool
+    stop_reason: str | None = None
+    draft_response: str | None = None
+    tool_requests: list[ToolRequest] = Field(default_factory=list)
+    reasoning: str = ""
+
+    @model_validator(mode="after")
+    def validate_consistency(self) -> PlannerDecision:
+        if self.done:
+            if not self.stop_reason:
+                raise ValueError("done=True requires stop_reason")
+            if not self.draft_response:
+                raise ValueError("done=True requires draft_response")
+            if self.tool_requests:
+                raise ValueError("done=True must not have tool_requests")
+        else:
+            if not self.tool_requests:
+                raise ValueError("done=False requires at least one tool_request")
+        return self
 
 
 # ---------------------------------------------------------------------------
