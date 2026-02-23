@@ -602,6 +602,31 @@ def test_tool_executor_executes_and_logs_with_thread_id(use_test_engine):
         assert log.success is True
 
 
+def test_tool_executor_emits_openai_compatible_tool_messages(use_test_engine):
+    with Session(use_test_engine) as session:
+        run = _seed_run(session)
+        _seed_person(session, run.id, name="Alice", rate=100.0)
+        session.commit()
+
+        nodes = make_nodes(session)
+        state = init_state(run.id, "sess-abc", "list people")
+        state["tool_queue"] = [
+            {"tool_name": "people_list", "arguments": {}, "idempotency_key": "call-123"},
+        ]
+
+        result = nodes["tool_executor"](state)
+        assistant_msg = result["messages"][-2]
+        tool_msg = result["messages"][-1]
+
+        assert assistant_msg["role"] == "assistant"
+        assert assistant_msg["tool_calls"][0]["id"] == "call-123"
+        assert assistant_msg["tool_calls"][0]["function"]["name"] == "people_list"
+        assert assistant_msg["tool_calls"][0]["function"]["arguments"] == "{}"
+        assert tool_msg["role"] == "tool"
+        assert tool_msg["tool_call_id"] == "call-123"
+        assert "name" not in tool_msg
+
+
 def test_gate_evaluator_is_deterministic_and_db_backed(use_test_engine):
     with Session(use_test_engine) as session:
         run = _seed_run(session)
@@ -696,3 +721,26 @@ def test_human_gate_assembles_strict_needs_review_payload(use_test_engine):
         ]
         assert payload["required_tasks"][0]["id"] == task.id
         assert payload["active_locks"][0]["id"] == lock.id
+
+
+def test_human_gate_synthesizes_thread_id_when_missing_from_state(use_test_engine):
+    with Session(use_test_engine) as session:
+        run = _seed_run(session)
+        _seed_contradiction(
+            session,
+            run.id,
+            severity=ContradictionSeverity.BLOCKING,
+            contradiction_type=ContradictionType.MISSING_EVIDENCE,
+        )
+        session.commit()
+
+        nodes = make_nodes(session)
+        state = init_state(run.id, "resume-22", "blocked flow")
+        state.pop("thread_id", None)
+        state.update(nodes["gate_evaluator"](state))
+
+        result = nodes["human_gate"](state)
+        payload = result["needs_review_payload"]
+
+        assert payload["thread_id"] == f"{run.id}:resume-22"
+        assert result["thread_id"] == f"{run.id}:resume-22"
