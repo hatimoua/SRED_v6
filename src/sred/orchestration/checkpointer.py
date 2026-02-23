@@ -20,11 +20,8 @@ def get_checkpointer(db_path: Path | None = None) -> SqliteSaver:
 
     The connection uses WAL journal mode for concurrent-read safety and
     ``check_same_thread=False`` so the saver can be shared across threads.
-
-    The caller owns the connection and must call ``saver.conn.close()`` when
-    the graph is torn down, or use the saver as a context manager if supported.
     """
-    path = str(db_path or settings.checkpoint_db)
+    path = str(db_path or settings.CHECKPOINT_DB)
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
     saver = SqliteSaver(conn=conn)
@@ -43,11 +40,8 @@ def clear_checkpoints(
       ``"{run_id}:{session_id}"``.
     * ``run_id`` only — delete all threads matching ``"{run_id}:%"``.
     * Neither — delete **all** rows (full reset).
-
-    Table names are ``checkpoints`` and ``writes`` as created by
-    ``SqliteSaver.setup()`` in langgraph-checkpoint-sqlite==3.0.3.
     """
-    path = str(db_path or settings.checkpoint_db)
+    path = str(db_path or settings.CHECKPOINT_DB)
     conn = sqlite3.connect(path, check_same_thread=False)
 
     total = 0
