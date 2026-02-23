@@ -169,3 +169,26 @@ def test_setup_creates_expected_tables(tmp_path):
 
     assert "checkpoints" in tables, f"'checkpoints' table missing; got {tables}"
     assert "writes" in tables, f"'writes' table missing; got {tables}"
+
+
+# -------------------------------------------------------------------
+# 9. Process-restart resume — close connection, reopen to same DB,
+#    verify latest checkpoint is still retrievable (simulates restart)
+# -------------------------------------------------------------------
+def test_resume_after_process_restart(tmp_path):
+    db = tmp_path / "cp.db"
+    config = _make_config("42:session-xyz")
+
+    # "Process 1" — write checkpoint then close connection
+    saver1 = get_checkpointer(db_path=db)
+    saver1.put(config, _empty_checkpoint("chk-restart"), CheckpointMetadata(), {})
+    saver1.conn.close()
+
+    # "Process 2" — fresh connection to same DB file, simulates restart
+    saver2 = get_checkpointer(db_path=db)
+    got = saver2.get_tuple(config)
+    saver2.conn.close()
+
+    assert got is not None, "Checkpoint not found after simulated process restart"
+    assert got.checkpoint["id"] == "chk-restart"
+    assert got.config["configurable"]["thread_id"] == "42:session-xyz"
