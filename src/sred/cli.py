@@ -149,31 +149,36 @@ def search(query: str):
     for i, (id, snippet) in enumerate(results, 1):
         print(f"{i}. [ID {id}] {snippet}")
 
-graph_app = typer.Typer(help="LangGraph checkpoint management commands.")
+graph_app = typer.Typer(help="LangGraph checkpoint management.")
 app.add_typer(graph_app, name="graph")
-
 
 @graph_app.command("reset")
 def graph_reset(
-    run_id: int | None = typer.Option(None, "--run-id", help="Clear checkpoints for a specific run ID."),
-    session_id: str | None = typer.Option(None, "--session-id", help="Clear a single thread (requires --run-id)."),
-    all_: bool = typer.Option(False, "--all", help="Clear ALL checkpoints (full reset)."),
+    run_id: int | None = typer.Option(None, help="Clear checkpoints for this run ID"),
+    session_id: str | None = typer.Option(None, help="Clear checkpoints for this session (requires --run-id)"),
+    all_: bool = typer.Option(False, "--all", help="Clear ALL checkpoints"),
 ):
-    """Clear LangGraph checkpoint data."""
-    if not all_ and run_id is None:
-        print("❌ Provide --run-id or --all.")
-        raise typer.Exit(code=1)
-
-    if all_ and run_id is not None:
-        print("❌ --all cannot be combined with --run-id.")
-        raise typer.Exit(code=1)
-
+    """Clear LangGraph checkpoints."""
     from sred.orchestration.checkpointer import clear_checkpoints
 
-    deleted = clear_checkpoints(run_id=run_id, session_id=session_id)
-    scope = "all" if all_ else (f"run {run_id}" + (f" session {session_id}" if session_id else ""))
-    print(f"✅ Cleared {deleted} checkpoint rows ({scope}).")
+    if not all_ and run_id is None:
+        print("❌ Provide --run-id, --run-id + --session-id, or --all")
+        raise typer.Exit(code=1)
 
+    if session_id is not None and run_id is None:
+        print("❌ --session-id requires --run-id")
+        raise typer.Exit(code=1)
+
+    deleted = clear_checkpoints(run_id=run_id, session_id=session_id)
+
+    if run_id and session_id:
+        scope = f"thread {run_id}:{session_id}"
+    elif run_id:
+        scope = f"run {run_id}"
+    else:
+        scope = "all checkpoints"
+
+    print(f"✅ Cleared {scope} ({deleted} rows deleted)")
 
 if __name__ == "__main__":
     app()
