@@ -149,5 +149,31 @@ def search(query: str):
     for i, (id, snippet) in enumerate(results, 1):
         print(f"{i}. [ID {id}] {snippet}")
 
+graph_app = typer.Typer(help="LangGraph checkpoint management commands.")
+app.add_typer(graph_app, name="graph")
+
+
+@graph_app.command("reset")
+def graph_reset(
+    run_id: int | None = typer.Option(None, "--run-id", help="Clear checkpoints for a specific run ID."),
+    session_id: str | None = typer.Option(None, "--session-id", help="Clear a single thread (requires --run-id)."),
+    all_: bool = typer.Option(False, "--all", help="Clear ALL checkpoints (full reset)."),
+):
+    """Clear LangGraph checkpoint data."""
+    if not all_ and run_id is None:
+        print("❌ Provide --run-id or --all.")
+        raise typer.Exit(code=1)
+
+    if all_ and run_id is not None:
+        print("❌ --all cannot be combined with --run-id.")
+        raise typer.Exit(code=1)
+
+    from sred.orchestration.checkpointer import clear_checkpoints
+
+    deleted = clear_checkpoints(run_id=run_id, session_id=session_id)
+    scope = "all" if all_ else (f"run {run_id}" + (f" session {session_id}" if session_id else ""))
+    print(f"✅ Cleared {deleted} checkpoint rows ({scope}).")
+
+
 if __name__ == "__main__":
     app()

@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 import numpy as np
+import pytest
 
 from sred.infra.search.vector_store import EmbeddingRecord, QueryResult, VectorStore
 
@@ -41,6 +42,9 @@ class InMemoryVectorStore(VectorStore):
         top_k: int = 10,
         filters: Mapping[str, object] | None = None,
     ) -> list[QueryResult]:
+        if top_k <= 0:
+            raise ValueError("top_k must be >= 1.")
+
         hits: list[QueryResult] = []
         for record in self._rows.values():
             if record.run_id != run_id or record.embedding_model != embedding_model:
@@ -151,6 +155,30 @@ def test_query_supports_metadata_filters():
         filters={"segment_type": "timesheet"},
     )
     assert [hit.entity_id for hit in hits] == [301]
+
+
+@pytest.mark.parametrize("invalid_top_k", [0, -1])
+def test_query_rejects_non_positive_top_k(invalid_top_k: int):
+    store = InMemoryVectorStore()
+    store.upsert_embeddings(
+        [
+            EmbeddingRecord(
+                run_id=1,
+                entity_id=401,
+                embedding_model="text-embedding-3-large",
+                vector=[1.0, 0.0],
+                metadata={"segment_type": "timesheet"},
+            ),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="top_k must be >= 1"):
+        store.query(
+            run_id=1,
+            embedding_model="text-embedding-3-large",
+            query_vector=[1.0, 0.0],
+            top_k=invalid_top_k,
+        )
 
 
 def test_delete_by_run_is_run_scoped():
