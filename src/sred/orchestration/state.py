@@ -8,7 +8,7 @@ Pydantic BaseModels for validation; stored in state as plain dicts via
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import TypedDict
+from typing import Literal, TypeAlias, TypedDict
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -159,6 +159,15 @@ class PlannerDecision(BaseModel):
 # GraphState (TypedDict — LangGraph native)
 # ---------------------------------------------------------------------------
 
+StopReason: TypeAlias = Literal["complete", "max_steps", "blocked", "error", "ask_user", ""]
+FinalPayloadStatus: TypeAlias = Literal["OK", "NEEDS_REVIEW", "ERROR"]
+
+
+class FinalPayload(TypedDict):
+    status: FinalPayloadStatus
+    message: str
+    next_actions: list[dict]
+
 
 class GraphState(TypedDict, total=False):
     # Identity
@@ -178,11 +187,12 @@ class GraphState(TypedDict, total=False):
     needs_review_payload: dict
     # Output assembly
     summary_text: str
-    final_payload: dict
+    final_payload: FinalPayload
     finalized: bool
     # Control flow
-    stop_reason: str  # "complete"|"max_steps"|"blocked"|"error"|""
+    stop_reason: StopReason
     is_blocked: bool
+    exit_requested: bool
     errors: list[str]
     step_count: int
     max_steps: int
@@ -218,6 +228,7 @@ def init_state(
         last_tool_result={},
         stop_reason="",
         is_blocked=False,
+        exit_requested=False,
         errors=[],
         step_count=0,
         max_steps=max_steps,

@@ -744,3 +744,31 @@ def test_human_gate_synthesizes_thread_id_when_missing_from_state(use_test_engin
 
         assert payload["thread_id"] == f"{run.id}:resume-22"
         assert result["thread_id"] == f"{run.id}:resume-22"
+
+
+def test_human_gate_merges_ask_user_prompt_with_blocking_payload(use_test_engine):
+    with Session(use_test_engine) as session:
+        run = _seed_run(session)
+        _seed_contradiction(
+            session,
+            run.id,
+            severity=ContradictionSeverity.BLOCKING,
+            contradiction_type=ContradictionType.MISSING_EVIDENCE,
+        )
+        session.commit()
+
+        nodes = make_nodes(session)
+        state = init_state(run.id, "session-ask", "what is missing?")
+        state["stop_reason"] = "ask_user"
+        state["messages"] = [
+            {"role": "assistant", "content": "Please confirm which records should be prioritized."}
+        ]
+        state.update(nodes["gate_evaluator"](state))
+
+        result = nodes["human_gate"](state)
+        payload = result["needs_review_payload"]
+
+        assert result["stop_reason"] == "ask_user"
+        assert payload["status"] == "NEEDS_REVIEW"
+        assert payload["user_prompt"] == "Please confirm which records should be prioritized."
+        assert any(action["action"] == "RESOLVE_CONTRADICTION" for action in payload["required_actions"])

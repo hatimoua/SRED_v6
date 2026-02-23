@@ -100,7 +100,7 @@ class TestInitState:
             "user_message", "messages",
             "context_packet",
             "tool_queue", "last_tool_result",
-            "stop_reason", "is_blocked", "errors",
+            "stop_reason", "is_blocked", "exit_requested", "errors",
             "step_count", "max_steps",
             "graph_state_version",
         }

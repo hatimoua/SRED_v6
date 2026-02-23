@@ -134,6 +134,7 @@ class TestPlannerNode:
         assert len(result["tool_queue"]) == 1
         assert result["tool_queue"][0]["tool_name"] == "list_files"
         assert result["step_count"] == 1
+        assert result["exit_requested"] is False
 
     def test_returns_stop_on_done(self):
         decision = PlannerDecision(
@@ -151,6 +152,7 @@ class TestPlannerNode:
 
         assert result["stop_reason"] == "complete"
         assert result["tool_queue"] == []
+        assert result["exit_requested"] is True
         # Assistant message appended
         assert any(
             m["role"] == "assistant" and "processed" in m["content"]
@@ -167,6 +169,7 @@ class TestPlannerNode:
 
         assert result["stop_reason"] == "max_steps"
         assert result["tool_queue"] == []
+        assert result["exit_requested"] is True
         assert fake.call_count == 0  # LLM not called
 
     def test_unknown_tool_error(self):
@@ -183,6 +186,7 @@ class TestPlannerNode:
         result = planner(state)
 
         assert result["stop_reason"] == "error"
+        assert result["exit_requested"] is True
         assert any("Unknown tool" in e for e in result["errors"])
 
     def test_planner_absent_without_llm_client(self):

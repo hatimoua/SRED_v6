@@ -46,13 +46,13 @@ def build_graph(
     graph.add_edge("retrieve_evidence_pack", "context_compiler")
     graph.add_edge("context_compiler", "planner")
 
-    # planner(done=no) -> tool loop; planner(done=yes/error/max_steps) -> exit path
+    # planner(done=no) -> tool loop; planner(done=yes/error/max_steps) -> exit evaluation
     graph.add_conditional_edges(
         "planner",
         _route_after_planner,
         {
             "tool_loop": "tool_executor",
-            "exit": "summarizer",
+            "exit_eval": "gate_evaluator",
         },
     )
 
@@ -62,7 +62,8 @@ def build_graph(
         _route_after_gate,
         {
             "blocked": "human_gate",
-            "continue": "load_world_snapshot",
+            "continue_tool_loop": "load_world_snapshot",
+            "finalize": "summarizer",
         },
     )
 
@@ -74,9 +75,16 @@ def build_graph(
     return graph.compile(checkpointer=checkpointer)
 
 
-def _route_after_planner(state: GraphState) -> Literal["tool_loop", "exit"]:
-    return "tool_loop" if state.get("tool_queue") else "exit"
+def _route_after_planner(state: GraphState) -> Literal["tool_loop", "exit_eval"]:
+    return "tool_loop" if state.get("tool_queue") else "exit_eval"
 
 
-def _route_after_gate(state: GraphState) -> Literal["blocked", "continue"]:
-    return "blocked" if state.get("is_blocked") else "continue"
+def _route_after_gate(state: GraphState) -> Literal["blocked", "continue_tool_loop", "finalize"]:
+    stop_reason = state.get("stop_reason")
+    if state.get("exit_requested") and stop_reason in {"error", "max_steps"}:
+        return "finalize"
+    if state.get("is_blocked"):
+        return "blocked"
+    if state.get("exit_requested"):
+        return "finalize"
+    return "continue_tool_loop"

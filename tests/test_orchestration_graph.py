@@ -193,3 +193,66 @@ def test_done_path_exits_without_tool_execution(use_test_engine):
             select(ToolCallLog).where(ToolCallLog.run_id == run.id)
         ).all()
         assert tool_calls == []
+
+
+def test_done_path_with_blocking_task_returns_needs_review(use_test_engine):
+    with Session(use_test_engine) as session:
+        run = _seed_run_with_person(session)
+        task = ReviewTask(
+            run_id=run.id,
+            issue_key=f"TASK:{run.id}:blocking",
+            title="Blocking task",
+            description="Must be resolved before completion",
+            severity=ContradictionSeverity.BLOCKING,
+            status=ReviewTaskStatus.OPEN,
+        )
+        session.add(task)
+        session.commit()
+
+        fake_llm = SequencedLLM(
+            responses=[
+                PlannerDecision(
+                    done=True,
+                    stop_reason="complete",
+                    draft_response="All done from planner perspective.",
+                    reasoning="Attempting completion",
+                ).model_dump_json()
+            ]
+        )
+        graph = build_graph(session, llm_client=fake_llm)
+        result = graph.invoke(init_state(run.id, "done-blocked-1", "finish now"))
+
+        assert fake_llm.call_count == 1
+        assert result["finalized"] is True
+        assert result["stop_reason"] == "blocked"
+        assert result["final_payload"]["status"] == "NEEDS_REVIEW"
+        assert result["needs_review_payload"]["status"] == "NEEDS_REVIEW"
+        assert any(
+            action["action"] == "RESOLVE_TASK"
+            for action in result["needs_review_payload"]["required_actions"]
+        )
+
+
+def test_ask_user_done_path_returns_needs_review(use_test_engine):
+    with Session(use_test_engine) as session:
+        run = _seed_run_with_person(session)
+        session.commit()
+
+        fake_llm = SequencedLLM(
+            responses=[
+                PlannerDecision(
+                    done=True,
+                    stop_reason="ask_user",
+                    draft_response="Please confirm whether to include contractor hours.",
+                    reasoning="Need user confirmation",
+                ).model_dump_json()
+            ]
+        )
+        graph = build_graph(session, llm_client=fake_llm)
+        result = graph.invoke(init_state(run.id, "ask-1", "include contractor hours"))
+
+        assert fake_llm.call_count == 1
+        assert result["finalized"] is True
+        assert result["stop_reason"] == "ask_user"
+        assert result["final_payload"]["status"] == "NEEDS_REVIEW"
+        assert result["final_payload"]["message"] == "Please confirm whether to include contractor hours."

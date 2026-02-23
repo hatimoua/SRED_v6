@@ -489,6 +489,7 @@ def make_nodes(
         thread_id: str | None = state.get("thread_id")
         if thread_id is None and session_id:
             thread_id = make_thread_id(run_id, session_id)
+        prior_stop_reason = state.get("stop_reason", "")
         snapshot = state.get("gate_snapshot") or _build_gate_snapshot(run_id)
 
         required_actions: list[dict[str, Any]] = []
@@ -510,6 +511,12 @@ def make_nodes(
             for c in snapshot["blocking_contradictions"]
             if c["type"] == "MISSING_EVIDENCE"
         ]
+        ask_user_prompt = ""
+        if prior_stop_reason == "ask_user":
+            for msg in reversed(state.get("messages", [])):
+                if msg.get("role") == "assistant" and msg.get("content"):
+                    ask_user_prompt = str(msg.get("content"))
+                    break
 
         payload = {
             "status": "NEEDS_REVIEW",
@@ -522,9 +529,11 @@ def make_nodes(
             "required_tasks": snapshot["required_tasks"],
             "active_locks": snapshot["active_locks"],
         }
+        if ask_user_prompt:
+            payload["user_prompt"] = ask_user_prompt
         update: dict[str, Any] = {
             "is_blocked": True,
-            "stop_reason": "blocked",
+            "stop_reason": "ask_user" if prior_stop_reason == "ask_user" else "blocked",
             "gate_snapshot": snapshot,
             "needs_review_payload": payload,
         }
@@ -557,27 +566,27 @@ def make_nodes(
     # ------------------------------------------------------------------
     def finalizer(state: GraphState) -> dict:
         stop_reason = state.get("stop_reason", "")
+        is_blocked = bool(state.get("is_blocked"))
+        review_payload = state.get("needs_review_payload") or {}
         status = "OK"
         message = ""
         next_actions: list[dict[str, Any]] = []
+        assistant_message = ""
+        for msg in reversed(state.get("messages", [])):
+            if msg.get("role") == "assistant" and msg.get("content"):
+                assistant_message = str(msg.get("content"))
+                break
 
-        if stop_reason == "blocked":
-            status = "NEEDS_REVIEW"
-            message = "Human review required before continuing."
-            review_payload = state.get("needs_review_payload") or {}
-            next_actions = list(review_payload.get("required_actions") or [])
-        elif stop_reason in {"error", "max_steps"}:
+        if stop_reason in {"error", "max_steps"}:
             status = "ERROR"
             errs = state.get("errors", [])
             message = errs[-1] if errs else f"Agent stopped with reason: {stop_reason}"
+        elif stop_reason == "ask_user" or is_blocked or stop_reason == "blocked":
+            status = "NEEDS_REVIEW"
+            next_actions = list(review_payload.get("required_actions") or [])
+            message = assistant_message or "Human review required before continuing."
         else:
-            # Use latest assistant message when planner finalized the turn.
-            for msg in reversed(state.get("messages", [])):
-                if msg.get("role") == "assistant" and msg.get("content"):
-                    message = str(msg.get("content"))
-                    break
-            if not message:
-                message = state.get("summary_text", "Turn complete.")
+            message = assistant_message or state.get("summary_text", "Turn complete.")
 
         return {
             "finalized": True,
@@ -602,6 +611,7 @@ def make_nodes(
             return {
                 "stop_reason": "max_steps",
                 "tool_queue": [],
+                "exit_requested": True,
             }
 
         packet = _current_packet(state)
@@ -629,6 +639,7 @@ def make_nodes(
                 "stop_reason": "error",
                 "errors": state.get("errors", []) + [f"Planner parse error: {exc}"],
                 "tool_queue": [],
+                "exit_requested": True,
             }
 
         # Validate tool names against registry
@@ -642,6 +653,7 @@ def make_nodes(
                         "errors": state.get("errors", [])
                         + [f"Unknown tool: {tr.tool_name}"],
                         "tool_queue": [],
+                        "exit_requested": True,
                     }
 
         if decision.done:
@@ -653,12 +665,14 @@ def make_nodes(
                 "stop_reason": decision.stop_reason,
                 "messages": state.get("messages", []) + [assistant_msg],
                 "tool_queue": [],
+                "exit_requested": True,
             }
 
         # Not done — enqueue tool requests
         return {
             "tool_queue": [tr.model_dump() for tr in decision.tool_requests],
             "step_count": step_count + 1,
+            "exit_requested": False,
         }
 
     # ------------------------------------------------------------------
@@ -697,6 +711,9 @@ RULES:
    appropriate stop_reason ("complete" or "ask_user") and a draft_response.
 4. Keep reasoning concise.
 5. Respond with valid JSON matching the PlannerDecision schema.
+6. If the World Snapshot shows any open contradictions, open tasks, or active
+   locks, you must NOT use stop_reason="complete"; use stop_reason="ask_user"
+   with a concise action request instead.
 """
 
 
