@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from sred.infra.search.vector_store import EmbeddingRecord, QueryResult
-from sred.infra.search.vector_sqlite import SqliteVecStore
+from sred.infra.search.vector_sqlite import EmbeddingDimensionError, SqliteVecStore
 
 
 @pytest.fixture
@@ -207,13 +207,60 @@ def test_empty_query_returns_empty(store: SqliteVecStore):
     assert hits == []
 
 
-def test_query_nonexistent_dimension_returns_empty(store: SqliteVecStore):
-    """Query for a dimension that has no table returns empty list."""
+def test_query_wrong_dimension_raises_for_registered_model(store: SqliteVecStore):
+    """Query with wrong dimension for a registered model raises EmbeddingDimensionError."""
     store.upsert_embeddings(
         [EmbeddingRecord(run_id=1, entity_id=1, embedding_model="m", vector=[1.0, 0.0])]
     )
-    # Query with 4-dim vector — no vec_idx_4 table exists.
-    hits = store.query(run_id=1, embedding_model="m", query_vector=[1.0, 0.0, 0.0, 0.0])
+    # Query with 4-dim vector for a model registered at dim=2.
+    with pytest.raises(EmbeddingDimensionError):
+        store.query(run_id=1, embedding_model="m", query_vector=[1.0, 0.0, 0.0, 0.0])
+
+
+# ---------------------------------------------------------------
+# Embedding model-dimension consistency tests
+# ---------------------------------------------------------------
+
+
+def test_upsert_rejects_dimension_change_for_same_model(store: SqliteVecStore):
+    """Upserting a model with a different dimension than previously registered raises."""
+    store.upsert_embeddings(
+        [EmbeddingRecord(run_id=1, entity_id=1, embedding_model="m", vector=[1.0, 0.0])]
+    )
+    with pytest.raises(EmbeddingDimensionError, match="dimension 2.*dimension 4"):
+        store.upsert_embeddings(
+            [EmbeddingRecord(run_id=1, entity_id=2, embedding_model="m", vector=[1.0, 0.0, 0.0, 0.0])]
+        )
+
+
+def test_query_rejects_dimension_mismatch(store: SqliteVecStore):
+    """Querying with wrong dimension for a registered model raises with both dims in message."""
+    store.upsert_embeddings(
+        [EmbeddingRecord(run_id=1, entity_id=1, embedding_model="m", vector=[1.0, 0.0])]
+    )
+    with pytest.raises(EmbeddingDimensionError, match=r"dimension 2.*dimension 4") as exc_info:
+        store.query(run_id=1, embedding_model="m", query_vector=[1.0, 0.0, 0.0, 0.0])
+    # Verify both dimensions appear in the error message.
+    msg = str(exc_info.value)
+    assert "2" in msg
+    assert "4" in msg
+
+
+def test_get_model_dimensions(store: SqliteVecStore):
+    """get_model_dimensions returns mapping of all registered models."""
+    store.upsert_embeddings(
+        [
+            EmbeddingRecord(run_id=1, entity_id=1, embedding_model="small", vector=[1.0, 0.0]),
+            EmbeddingRecord(run_id=1, entity_id=2, embedding_model="big", vector=[1.0, 0.0, 0.0, 0.0]),
+        ]
+    )
+    dims = store.get_model_dimensions()
+    assert dims == {"small": 2, "big": 4}
+
+
+def test_query_unregistered_model_returns_empty(store: SqliteVecStore):
+    """Querying for a model that was never upserted returns empty list."""
+    hits = store.query(run_id=1, embedding_model="never-seen", query_vector=[1.0, 0.0])
     assert hits == []
 
 

@@ -16,6 +16,10 @@ from sred.infra.search.vector_store import EmbeddingRecord, QueryResult, VectorS
 _OVERFETCH = 4
 
 
+class EmbeddingDimensionError(ValueError):
+    """Raised when embedding dimensions are inconsistent for a given model."""
+
+
 def _serialize_f32(vector: Sequence[float]) -> bytes:
     """Pack a float vector into little-endian binary (sqlite-vec format)."""
     return struct.pack(f"{len(vector)}f", *vector)
@@ -59,7 +63,23 @@ class SqliteVecStore(VectorStore):
             "CREATE INDEX IF NOT EXISTS idx_vec_meta_run_model "
             "ON vec_meta(run_id, embedding_model)"
         )
+
+        # Registry of known (model → dimension) mappings for consistency checks.
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS vec_model_dims (
+                model TEXT PRIMARY KEY,
+                dim   INTEGER NOT NULL
+            )
+            """
+        )
         self._conn.commit()
+
+        # Populate in-memory cache from DB.
+        self._model_dims: dict[str, int] = {
+            row[0]: row[1]
+            for row in self._conn.execute("SELECT model, dim FROM vec_model_dims").fetchall()
+        }
 
         # Track which vec_idx_{dim} tables already exist.
         self._known_dims: set[int] = set()
@@ -92,6 +112,27 @@ class SqliteVecStore(VectorStore):
     def upsert_embeddings(self, records: Sequence[EmbeddingRecord]) -> int:
         if not records:
             return 0
+
+        # Validate model-dimension consistency before any writes.
+        for rec in records:
+            dim = len(rec.vector)
+            registered = self._model_dims.get(rec.embedding_model)
+            if registered is not None and registered != dim:
+                raise EmbeddingDimensionError(
+                    f"Model '{rec.embedding_model}' is registered with dimension "
+                    f"{registered}, but received vector with dimension {dim}. "
+                    f"Re-embed existing data or use a different model name."
+                )
+
+        # Register any new model→dim mappings.
+        for rec in records:
+            dim = len(rec.vector)
+            if rec.embedding_model not in self._model_dims:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO vec_model_dims(model, dim) VALUES (?, ?)",
+                    (rec.embedding_model, dim),
+                )
+                self._model_dims[rec.embedding_model] = dim
 
         # Group by dimension so we can ensure tables exist.
         dims_seen: set[int] = set()
@@ -159,6 +200,18 @@ class SqliteVecStore(VectorStore):
             raise ValueError("top_k must be >= 1.")
 
         dim = len(query_vector)
+
+        # Model-dimension consistency check.
+        registered = self._model_dims.get(embedding_model)
+        if registered is None:
+            return []  # No data for this model — nothing to query.
+        if registered != dim:
+            raise EmbeddingDimensionError(
+                f"Model '{embedding_model}' has stored embeddings with dimension "
+                f"{registered}, but query vector has dimension {dim}. "
+                f"Re-embed your data or provide a {registered}-dim query vector."
+            )
+
         if dim not in self._known_dims:
             return []
 
@@ -227,6 +280,10 @@ class SqliteVecStore(VectorStore):
         self._conn.execute("DELETE FROM vec_meta WHERE run_id = ?", (run_id,))
         self._conn.commit()
         return len(rows)
+
+    def get_model_dimensions(self) -> dict[str, int]:
+        """Return a mapping of registered embedding model names to their dimensions."""
+        return dict(self._model_dims)
 
     def rebuild_index(self, *, run_id: int | None = None) -> None:
         # vec0 maintains its own index automatically — nothing to do.
