@@ -215,3 +215,19 @@ def test_query_nonexistent_dimension_returns_empty(store: SqliteVecStore):
     # Query with 4-dim vector — no vec_idx_4 table exists.
     hits = store.query(run_id=1, embedding_model="m", query_vector=[1.0, 0.0, 0.0, 0.0])
     assert hits == []
+
+
+def test_score_clamped_non_negative_for_anti_correlated_vectors(store: SqliteVecStore):
+    """Score is clamped to >= 0 even for vectors pointing in opposite directions.
+
+    Cosine distance ranges [0, 2]; subtracting from 1.0 can yield negative
+    values for anti-correlated pairs.  The clamp ensures callers always
+    receive scores in [0, 1].
+    """
+    store.upsert_embeddings(
+        [EmbeddingRecord(run_id=1, entity_id=1, embedding_model="m", vector=[1.0, 0.0])]
+    )
+    # Query with perfectly anti-correlated vector — cosine distance == 2.0
+    hits = store.query(run_id=1, embedding_model="m", query_vector=[-1.0, 0.0], top_k=5)
+    assert len(hits) == 1
+    assert hits[0].score >= 0.0

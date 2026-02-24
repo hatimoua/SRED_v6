@@ -197,7 +197,7 @@ class SqliteVecStore(VectorStore):
                     run_id=mrun,
                     entity_id=mentity,
                     embedding_model=mmodel,
-                    score=1.0 - distance_map[mid],
+                    score=max(0.0, 1.0 - distance_map[mid]),
                     metadata=meta,
                 )
             )
