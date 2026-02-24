@@ -1,12 +1,15 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import List, Dict, Tuple
+from typing import List
 from collections import defaultdict
 from sqlmodel import Session
 from sred.models.core import Segment
 from sred.search.fts import search_segments
-from sred.search.embeddings import get_query_embedding
+from sred.search.embeddings import get_query_embedding, EMBEDDING_MODEL
 from sred.search.vector_search import search_vectors
 from sred.models.vector import EntityType
+from sred.infra.search.vector_store import VectorStore
 
 @dataclass
 class SearchResult:
@@ -24,18 +27,11 @@ def fts_search(session: Session, query: str, limit: int = 20) -> List[SearchResu
     """
     raw_results = search_segments(query, limit=limit)
     hits = []
-    
-    # search_segments returns list of (id, snippet).
-    # We need to fetch full content? Or just use snippet?
-    # For now, let's fetch Segment object to be consistent.
-    # Actually search_segments returns list of rows.
-    # Let's just assume we get ID and use that.
-    
+
     for i, row in enumerate(raw_results):
         seg_id = row[0]
         snippet = row[1]
-        
-        # We need provenance?
+
         hits.append(SearchResult(
             id=seg_id,
             content=snippet,
@@ -45,25 +41,51 @@ def fts_search(session: Session, query: str, limit: int = 20) -> List[SearchResu
         ))
     return hits
 
-def vector_search_wrapper(session: Session, query: str, run_id: int, limit: int = 20) -> List[SearchResult]:
+def vector_search_wrapper(
+    session: Session,
+    query: str,
+    run_id: int,
+    limit: int = 20,
+    vector_store: VectorStore | None = None,
+) -> List[SearchResult]:
     """
     Perform Vector search.
+    When *vector_store* is provided, delegates to its KNN query.
+    Otherwise falls back to the legacy brute-force numpy path.
     """
-    # 1. Embed query
     query_vec = get_query_embedding(query)
-    
-    # 2. Search
-    vec_results = search_vectors(session, query_vec, run_id, top_k=limit)
-    
+
+    if vector_store is not None:
+        vec_results = vector_store.query(
+            run_id=run_id,
+            embedding_model=EMBEDDING_MODEL,
+            query_vector=query_vec,
+            top_k=limit,
+        )
+        hits: list[SearchResult] = []
+        for i, qr in enumerate(vec_results):
+            seg = session.get(Segment, qr.entity_id)
+            if seg:
+                hits.append(SearchResult(
+                    id=seg.id,
+                    content=seg.content[:200] + "...",
+                    score=qr.score,
+                    source="VECTOR",
+                    rank_vector=i + 1,
+                ))
+        return hits
+
+    # Legacy numpy path
+    vec_results_legacy = search_vectors(session, query_vec, run_id, top_k=limit)
+
     hits = []
-    for i, (emb, score) in enumerate(vec_results):
+    for i, (emb, score) in enumerate(vec_results_legacy):
         if emb.entity_type == EntityType.SEGMENT:
-            # Fetch segment content
             seg = session.get(Segment, emb.entity_id)
             if seg:
                 hits.append(SearchResult(
                     id=seg.id,
-                    content=seg.content[:200] + "...", # Snippet
+                    content=seg.content[:200] + "...",
                     score=score,
                     source="VECTOR",
                     rank_vector=i + 1
@@ -77,20 +99,18 @@ def rrf_fusion(fts_results: List[SearchResult], vector_results: List[SearchResul
     """
     scores = defaultdict(float)
     content_map = {}
-    
+
     # Process FTS
     for res in fts_results:
         scores[res.id] += 1 / (k + res.rank_fts)
         content_map[res.id] = res.content
-        
+
     # Process Vector
     for res in vector_results:
         scores[res.id] += 1 / (k + res.rank_vector)
-        # Prefer FTS snippet if available (has highlighting)? Or Vector content?
-        # FTS snippet has <b> tags. Keep it if present.
         if res.id not in content_map:
             content_map[res.id] = res.content
-            
+
     # Create fused list
     fused = []
     for seg_id, score in scores.items():
@@ -100,16 +120,24 @@ def rrf_fusion(fts_results: List[SearchResult], vector_results: List[SearchResul
             score=score,
             source="HYBRID"
         ))
-        
+
     # Sort descending
     fused.sort(key=lambda x: x.score, reverse=True)
     return fused
 
-def hybrid_search(session: Session, query: str, run_id: int, limit: int = 20) -> List[SearchResult]:
+def hybrid_search(
+    session: Session,
+    query: str,
+    run_id: int,
+    limit: int = 20,
+    vector_store: VectorStore | None = None,
+) -> List[SearchResult]:
     """
     Perform Hybrid Search (FTS + Vector).
+    When *vector_store* is provided, the vector leg uses SqliteVecStore KNN
+    instead of the legacy brute-force numpy path.
     """
     fts_hits = fts_search(session, query, limit=limit)
-    vec_hits = vector_search_wrapper(session, query, run_id, limit=limit)
-    
+    vec_hits = vector_search_wrapper(session, query, run_id, limit=limit, vector_store=vector_store)
+
     return rrf_fusion(fts_hits, vec_hits)

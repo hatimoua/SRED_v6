@@ -1,8 +1,10 @@
 """Search use-case service."""
 from __future__ import annotations
+from sred.config import settings
 from sred.domain.exceptions import NotFoundError
 from sred.infra.db.uow import UnitOfWork
 from sred.infra.db.repositories.run_repository import RunRepository
+from sred.infra.search.vector_sqlite import SqliteVecStore
 from sred.api.schemas.search import SearchQuery, SearchResultRead, SearchResponse, SearchMode
 from sred.search.hybrid_search import (
     fts_search, vector_search_wrapper, rrf_fusion, hybrid_search,
@@ -13,6 +15,7 @@ from sred.models.core import Segment, File
 class SearchService:
     def __init__(self, uow: UnitOfWork) -> None:
         self._uow = uow
+        self._vector_store = SqliteVecStore(settings.vec_db)
 
     def search(self, run_id: int, payload: SearchQuery) -> SearchResponse:
         run_repo = RunRepository(self._uow.session)
@@ -27,9 +30,9 @@ class SearchService:
         if mode == SearchMode.FTS:
             raw = fts_search(session, query, limit=limit)
         elif mode == SearchMode.VECTOR:
-            raw = vector_search_wrapper(session, query, run_id, limit=limit)
+            raw = vector_search_wrapper(session, query, run_id, limit=limit, vector_store=self._vector_store)
         else:
-            raw = hybrid_search(session, query, run_id, limit=limit)
+            raw = hybrid_search(session, query, run_id, limit=limit, vector_store=self._vector_store)
 
         results: list[SearchResultRead] = []
         for res in raw:

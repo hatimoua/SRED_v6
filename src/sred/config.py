@@ -33,6 +33,10 @@ class Settings(BaseSettings):
         Path("data/checkpoints.db"),
         description="Path to the LangGraph SqliteSaver checkpoint database",
     )
+    vec_db: Path = Field(
+        Path("data/vec.db"),
+        description="Path to the sqlite-vec vector store database",
+    )
 
 # Singleton instance
 settings = Settings()

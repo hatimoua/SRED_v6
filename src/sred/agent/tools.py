@@ -70,8 +70,11 @@ register_tool(
 def _search_hybrid(session: Session, run_id: int, *, query: str, limit: int = 10) -> dict:
     """Run hybrid (FTS + vector) search over segments."""
     from sred.search.hybrid_search import hybrid_search
+    from sred.infra.search.vector_sqlite import SqliteVecStore
+    from sred.config import settings
 
-    results = hybrid_search(session, query, run_id, limit=limit)
+    vector_store = SqliteVecStore(settings.vec_db)
+    results = hybrid_search(session, query, run_id, limit=limit, vector_store=vector_store)
     return {
         "count": len(results),
         "results": [
