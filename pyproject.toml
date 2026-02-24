@@ -23,6 +23,7 @@ dependencies = [
     "python-docx>=1.2.0",
     "python-dotenv>=1.2.1",
     "python-multipart>=0.0.20",
+    "sqlite-vec>=0.1.6",
     "sqlmodel>=0.0.33",
     "streamlit>=1.54.0",
     "typer>=0.15",
