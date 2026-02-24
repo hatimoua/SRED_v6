@@ -36,6 +36,7 @@ def create_app() -> FastAPI:
     from sred.api.routers.payroll import router as payroll_router
     from sred.api.routers.ledger import router as ledger_router
     from sred.api.routers.csv import router as csv_router
+    from sred.api.routers.agent import router as agent_router
 
     app.include_router(runs_router)
     app.include_router(files_router)
@@ -48,6 +49,7 @@ def create_app() -> FastAPI:
     app.include_router(payroll_router)
     app.include_router(ledger_router)
     app.include_router(csv_router)
+    app.include_router(agent_router)
 
     @app.exception_handler(NotFoundError)
     def _not_found(request: Request, exc: NotFoundError) -> JSONResponse:
