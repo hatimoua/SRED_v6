@@ -161,11 +161,6 @@ def test_hybrid_search_with_vector_store(session):
         ),
     ]
 
-    # Mock FTS to return seg1 only
-    fts_results = [
-        SearchResult(id=seg1.id, content="Segment one", score=0, source="FTS", rank_fts=1),
-    ]
-
     with (
         patch("sred.search.hybrid_search.get_query_embedding", return_value=[0.1, 0.2]),
         patch("sred.search.hybrid_search.search_segments", return_value=[(seg1.id, "Segment one")]),

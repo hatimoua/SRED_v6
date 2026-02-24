@@ -54,3 +54,7 @@ class VectorStore(ABC):
     @abstractmethod
     def rebuild_index(self, *, run_id: int | None = None) -> None:
         """Rebuild the backend index globally or for one run."""
+
+    @abstractmethod
+    def close(self) -> None:
+        """Release any underlying connections or resources."""

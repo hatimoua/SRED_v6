@@ -74,9 +74,12 @@ class InMemoryVectorStore(VectorStore):
     def rebuild_index(self, *, run_id: int | None = None) -> None:
         self.rebuild_calls.append(run_id)
 
+    def close(self) -> None:
+        pass
+
 
 def test_vector_store_contract_has_required_methods():
-    required = {"upsert_embeddings", "query", "delete_by_run", "rebuild_index"}
+    required = {"upsert_embeddings", "query", "delete_by_run", "rebuild_index", "close"}
     assert required.issubset(VectorStore.__abstractmethods__)
 
 

@@ -68,7 +68,7 @@ def vector_search_wrapper(
             if seg:
                 hits.append(SearchResult(
                     id=seg.id,
-                    content=seg.content[:200] + "...",
+                    content=(seg.content[:200] + "...") if len(seg.content) > 200 else seg.content,
                     score=qr.score,
                     source="VECTOR",
                     rank_vector=i + 1,
@@ -85,7 +85,7 @@ def vector_search_wrapper(
             if seg:
                 hits.append(SearchResult(
                     id=seg.id,
-                    content=seg.content[:200] + "...",
+                    content=(seg.content[:200] + "...") if len(seg.content) > 200 else seg.content,
                     score=score,
                     source="VECTOR",
                     rank_vector=i + 1

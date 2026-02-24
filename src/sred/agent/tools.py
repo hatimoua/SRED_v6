@@ -67,14 +67,24 @@ register_tool(
 # ---------------------------------------------------------------------------
 # search.hybrid
 # ---------------------------------------------------------------------------
+def _get_vec_store() -> "SqliteVecStore":
+    """Return the module-level SqliteVecStore singleton (created once per process)."""
+    global _vec_store
+    if _vec_store is None:
+        from sred.infra.search.vector_sqlite import SqliteVecStore
+        from sred.config import settings
+        _vec_store = SqliteVecStore(settings.vec_db)
+    return _vec_store
+
+
+_vec_store: "SqliteVecStore | None" = None
+
+
 def _search_hybrid(session: Session, run_id: int, *, query: str, limit: int = 10) -> dict:
     """Run hybrid (FTS + vector) search over segments."""
     from sred.search.hybrid_search import hybrid_search
-    from sred.infra.search.vector_sqlite import SqliteVecStore
-    from sred.config import settings
 
-    vector_store = SqliteVecStore(settings.vec_db)
-    results = hybrid_search(session, query, run_id, limit=limit, vector_store=vector_store)
+    results = hybrid_search(session, query, run_id, limit=limit, vector_store=_get_vec_store())
     return {
         "count": len(results),
         "results": [

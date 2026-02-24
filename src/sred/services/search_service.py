@@ -4,7 +4,7 @@ from sred.config import settings
 from sred.domain.exceptions import NotFoundError
 from sred.infra.db.uow import UnitOfWork
 from sred.infra.db.repositories.run_repository import RunRepository
-from sred.infra.search.vector_sqlite import SqliteVecStore
+from sred.infra.search.vector_store import VectorStore
 from sred.api.schemas.search import SearchQuery, SearchResultRead, SearchResponse, SearchMode
 from sred.search.hybrid_search import (
     fts_search, vector_search_wrapper, rrf_fusion, hybrid_search,
@@ -13,9 +13,13 @@ from sred.models.core import Segment, File
 
 
 class SearchService:
-    def __init__(self, uow: UnitOfWork) -> None:
+    def __init__(self, uow: UnitOfWork, vector_store: VectorStore | None = None) -> None:
         self._uow = uow
-        self._vector_store = SqliteVecStore(settings.vec_db)
+        if vector_store is not None:
+            self._vector_store: VectorStore | None = vector_store
+        else:
+            from sred.infra.search.vector_sqlite import SqliteVecStore
+            self._vector_store = SqliteVecStore(settings.vec_db)
 
     def search(self, run_id: int, payload: SearchQuery) -> SearchResponse:
         run_repo = RunRepository(self._uow.session)
