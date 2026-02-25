@@ -50,6 +50,7 @@ def create_text_segments(session: Session, file: File, text: str, page_number: O
     for chunk in chunks:
         seg = Segment(
             file_id=file.id,
+            source_file_id=file.id,
             run_id=file.run_id,
             content=chunk,
             page_number=page_number,
@@ -87,6 +88,7 @@ def process_csv_content(session: Session, file: File, df: pd.DataFrame) -> List[
         # Prompt says: "create StagingRow per row + Segment per row"
         seg = Segment(
             file_id=file.id,
+            source_file_id=file.id,
             run_id=file.run_id,
             content=staging.normalized_text,
             row_number=index + 1,

@@ -68,19 +68,25 @@ def reindex_all():
 def index_segments(segment_ids: list[int]):
     """Incrementally insert specific segments into the FTS index.
 
-    Safe to call even if the segment is already indexed (uses INSERT OR IGNORE
-    semantics via a NOT EXISTS guard).
+    Uses delete-then-insert for idempotency, since external-content FTS5
+    tables do not support reliable rowid membership queries.
     """
     if not segment_ids:
         return
     setup_fts()  # ensure virtual table exists
     with Session(engine) as session:
         for sid in segment_ids:
+            # Remove existing entry (safe no-op if not present)
+            session.exec(text("""
+                INSERT INTO segment_fts(segment_fts, rowid, id, content)
+                SELECT 'delete', id, id, content FROM segment
+                WHERE id = :sid
+            """), params={"sid": sid})
+            # Insert fresh entry
             session.exec(text("""
                 INSERT INTO segment_fts(rowid, id, content)
                 SELECT id, id, content FROM segment
                 WHERE id = :sid
-                AND id NOT IN (SELECT rowid FROM segment_fts)
             """), params={"sid": sid})
         session.commit()
     logger.info(f"Indexed {len(segment_ids)} segment(s) into FTS.")
@@ -90,11 +96,17 @@ def index_memory(memory_id: int):
     """Incrementally insert a single MemoryDoc into the FTS index."""
     setup_fts()
     with Session(engine) as session:
+        # Remove existing entry (safe no-op if not present)
+        session.exec(text("""
+            INSERT INTO memory_fts(memory_fts, rowid, id, content_md)
+            SELECT 'delete', id, id, content_md FROM memorydoc
+            WHERE id = :mid
+        """), params={"mid": memory_id})
+        # Insert fresh entry
         session.exec(text("""
             INSERT INTO memory_fts(rowid, id, content_md)
             SELECT id, id, content_md FROM memorydoc
             WHERE id = :mid
-            AND id NOT IN (SELECT rowid FROM memory_fts)
         """), params={"mid": memory_id})
         session.commit()
 
