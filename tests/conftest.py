@@ -45,6 +45,12 @@ def use_test_engine(tmp_path, monkeypatch):
             "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts "
             "USING fts5(id UNINDEXED, content_md, content='memorydoc', content_rowid='id');"
         ))
+        s.exec(text(
+            "CREATE TABLE IF NOT EXISTS segment_fts_log (segment_id INTEGER PRIMARY KEY);"
+        ))
+        s.exec(text(
+            "CREATE TABLE IF NOT EXISTS memory_fts_log (memory_id INTEGER PRIMARY KEY);"
+        ))
         s.commit()
 
     # Redirect all infra/db and FTS references to the test engine
